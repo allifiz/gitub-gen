@@ -3,6 +3,8 @@ import { parseDsmText } from './parser';
 import type { DsmTask, JobState } from './types';
 
 const assigneeInput = document.querySelector<HTMLInputElement>('#assignee')!;
+const githubUsernameInput =
+  document.querySelector<HTMLInputElement>('#githubUsername')!;
 const fileInput = document.querySelector<HTMLInputElement>('#dsmFile')!;
 const generateButton = document.querySelector<HTMLButtonElement>('#generate')!;
 const statusEl = document.querySelector<HTMLElement>('#status')!;
@@ -92,7 +94,9 @@ async function parseSelectedFile() {
 
     renderPreview(parsedTasks);
     statusEl.textContent = 'Siap generate.';
-    detailEl.textContent = `${parsedTasks.length} issue unik ditemukan.`;
+    const uniqueRoots = new Set(parsedTasks.map((task) => task.ticketUrl)).size;
+    detailEl.textContent =
+      `${parsedTasks.length} entri harian dari ${uniqueRoots} root issue ditemukan.`;
     generateButton.disabled = running;
   } catch (error) {
     parsedTasks = [];
@@ -125,6 +129,8 @@ generateButton.addEventListener('click', async () => {
     const response = await chrome.runtime.sendMessage({
       type: 'START_JOB',
       tasks: parsedTasks,
+      githubUsername:
+        githubUsernameInput.value.trim() || 'allifgobimbel',
     });
 
     if (!response?.ok) {
