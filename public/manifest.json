@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "Gitub Gen - KPI Generator",
+  "version": "0.2.0",
+  "description": "Generate KPI Excel from DSM DOCX and GitHub issue timeline timestamps.",
+  "permissions": [
+    "tabs",
+    "scripting",
+    "downloads",
+    "storage"
+  ],
+  "host_permissions": [
+    "https://github.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Gitub Gen"
+  }
+}
