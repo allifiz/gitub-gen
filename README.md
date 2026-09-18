@@ -1,29 +1,131 @@
 # Gitub Gen
 
-Generator KPI dari **DSM DOCX + timeline GitHub issue** tanpa OAuth, PAT, GitHub CLI, atau approval organization.
+Generator KPI dari **DSM DOCX + work graph GitHub** tanpa OAuth, PAT, GitHub CLI, atau approval organization.
 
-Extension ini berjalan di Chrome yang **sudah login GitHub kantor**. Ia membuka setiap issue dari DSM di background tab, membaca event timeline, mengambil timestamp exact dari elemen `relative-time[datetime]`, lalu menghasilkan Excel.
+Extension berjalan di Chrome yang **sudah login GitHub kantor**. URL issue dari DSM diperlakukan sebagai **root ticket**, lalu Gitub Gen membuka timeline GitHub di background dan mengikuti hubungan kerja yang relevan:
 
-## Rule KPI
+- root issue
+- sub-issue
+- parent issue (jika root ternyata sub-ticket)
+- linked pull request dari root/sub/parent yang relevan
 
-- **Start Time** = event pertama yang berubah **to In Progress**
-- **End Time** = event pertama **to Ready to Review** setelah Start Time
-- Event setelah Ready to Review pertama diabaikan.
-- Timestamp GitHub (UTC) dikonversi ke **Asia/Jakarta / WIB**.
-- Jika ticket muncul berkali-kali di DSM:
-  - `Date` = kemunculan pertama
-  - `Status` = status DSM terakhir
-  - output tetap satu row per URL issue.
+Tujuannya supaya pekerjaan yang sebenarnya terjadi hanya di DB sub-ticket atau hanya di gateway/main ticket tetap terbaca.
 
-## Kenapa Chrome extension?
+## Model data: Work Episode
 
-Private repo GO-Bimbel dibatasi untuk OAuth App. Extension tidak meminta akses organisasi baru. Ia membaca halaman GitHub yang memang sudah bisa dibuka oleh session Chrome user saat ini.
+Gitub Gen **tidak lagi memakai aturan 1 issue = 1 row**.
 
-Tidak ada password atau token GitHub yang disimpan oleh Gitub Gen.
+Satu URL issue boleh menghasilkan beberapa row KPI kalau DSM menunjukkan ticket tersebut dikerjakan lagi.
+
+Contoh:
+
+```text
+8 Sep   In Progress
+9 Sep   Ready to Review
+        => Episode 1
+
+10 Sep  In Progress
+11 Sep  Ready to Review
+        => Episode 2
+
+12 Sep  Staging + change request dikerjakan lagi
+        => Episode 3
+```
+
+DSM pada tanggal yang sama (mis. 11.00 dan 16.00) digabung menjadi satu entri harian, tetapi seluruh status pada hari tersebut tetap disimpan.
+
+## Penentuan waktu
+
+Urutan sumber waktu:
+
+### 1. Status issue dalam work graph
+
+Gitub Gen mencari pasangan:
+
+```text
+to In Progress
+...
+to Ready to Review
+```
+
+bukan hanya di root issue, tetapi juga di related issue/sub-issue.
+
+Kalau beberapa issue dalam work graph sama-sama punya pasangan status pada episode yang sama:
+
+- Start = status In Progress paling awal
+- End = Ready to Review paling akhir
+
+Time Source:
+
+- `ROOT_ISSUE_STATUS`
+- `RELATED_ISSUE_STATUS`
+
+### 2. Related PR activity
+
+Kalau status tidak diubah tetapi DSM membuktikan ticket dikerjakan lagi, Gitub Gen melihat aktivitas pull request milik GitHub username yang diisi di UI.
+
+Contoh:
+
+```text
+Root: go-superapp-api#100
+├── PR gateway #700
+└── Sub issue db-kbm#200
+    └── PR DB #555
+```
+
+Jika pada tanggal DSM hanya PR DB yang aktif, sumber waktu bisa berasal dari PR DB. Jika gateway dan DB sama-sama aktif, aktivitas keduanya masuk activity pool.
+
+Untuk mencegah durasi palsu karena malam/overnight, fallback PR activity otomatis hanya dihitung untuk **episode satu tanggal**.
+
+Time Source:
+
+- `RELATED_PR_ACTIVITY`
+- `PR_ACTIVITY_PARTIAL`
+
+### 3. DSM only
+
+Kalau DSM mencatat pekerjaan tetapi GitHub tidak memiliki status pair atau aktivitas PR yang cukup:
+
+- row KPI tetap dibuat
+- Start Time kosong
+- End Time kosong
+- Hour kosong
+- Diagnostics = `DSM_ONLY`
+
+Gitub Gen tidak mengarang durasi dari jam standup.
+
+## Work graph
+
+Contoh struktur yang didukung:
+
+```text
+ROOT ISSUE
+│
+├── linked PR gateway
+│
+└── SUB-ISSUE DB
+    └── linked PR DB
+```
+
+atau kebalikannya:
+
+```text
+ROOT ISSUE DB
+│
+├── linked PR DB
+│
+└── SUB-ISSUE gateway
+    └── linked PR gateway
+```
+
+Jika root ternyata sebuah sub-ticket dan memiliki parent, parent boleh menyumbang linked PR. Namun crawler tidak menyapu seluruh sibling sub-ticket milik parent agar satu KPI tidak menarik pekerjaan yang tidak terkait.
+
+Batas crawler:
+
+- max depth: 2
+- max graph nodes: 24
 
 ## Install
-
-Clone repo:
 
 ```bash
 git clone https://github.com/allifiz/gitub-gen.git
@@ -32,73 +134,64 @@ npm install
 npm run build
 ```
 
-Lalu di Chrome:
+Lalu:
 
-1. Buka `chrome://extensions`
-2. Aktifkan **Developer mode**
-3. Klik **Load unpacked**
-4. Pilih folder `dist` dari repo ini
-5. Pin **Gitub Gen** kalau mau
+1. buka `chrome://extensions`
+2. aktifkan **Developer mode**
+3. klik **Load unpacked**
+4. pilih folder `dist`
+5. pin **Gitub Gen**
 
 Pastikan Chrome yang sama sudah bisa membuka private issue GO-Bimbel.
 
 ## Pakai
 
-1. Klik icon extension **Gitub Gen**
-2. Gitub Gen akan terbuka sebagai **tab permanen**, bukan popup
-3. Assignee default: `Allief`
-4. Pilih file `BASIC DAILY STANDUP ... .docx`
-5. Halaman tetap terbuka ketika native file picker muncul
-6. Extension menampilkan jumlah issue unik yang ditemukan
-7. Klik **Generate KPI Excel**
-8. Extension akan:
-   - membuka issue GitHub satu per satu sebagai background tab
-   - membaca timeline
-   - menutup tab otomatis
-   - mengunduh `KPI-<Bulan>-<Tahun>.xlsx`
+1. klik icon **Gitub Gen**
+2. app terbuka sebagai tab permanen
+3. isi Assignee, default `Allief`
+4. isi GitHub username, default `allifgobimbel`
+5. pilih DSM `.docx`
+6. preview menampilkan jumlah entri DSM harian
+7. klik **Generate KPI Excel**
 
-Tidak perlu hover timestamp, DevTools, copy-paste tanggal, atau membuka issue satu per satu.
+Gitub Gen kemudian:
 
-> UI sengaja dibuka sebagai tab extension biasa. Chrome menutup action popup ketika popup kehilangan fokus (misalnya saat file picker dibuka), jadi upload DOCX tidak diletakkan di popup.
+- membangun work episode
+- membuka root issue otomatis
+- menemukan sub-issue / parent / linked PR
+- membaca exact `relative-time[datetime]`
+- mencocokkan aktivitas dengan tanggal episode DSM
+- mengubah UTC ke WIB
+- membuat Excel
 
-## Format Excel
+Tidak perlu hover timestamp, DevTools, atau membuka issue satu per satu.
+
+## Excel
 
 Sheet **KPI**:
 
 | Assignee | Type | Ticket Title | Ticket URL | Type | Status | Priority | Date | Week | Start Time | End Time | Hour |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 
-Sheet **Diagnostics** menyimpan status scraping tiap URL:
+Ticket URL tetap root URL dari DSM walaupun waktu pengerjaan ditemukan dari sub-issue atau PR repo lain.
 
-- `OK`
-- `NO_IN_PROGRESS`
-- `NO_READY_TO_REVIEW`
-- `NO_ACCESS`
-- `ERROR`
+Sheet **Diagnostics** mencatat per episode:
 
-Ini berguna kalau ada ticket yang workflow statusnya tidak lengkap.
+- Episode ID
+- Root Ticket
+- DSM Dates
+- DSM Statuses
+- DSM Times
+- Time Source
+- Status Sources
+- Activity Sources
+- Related Issues
+- Related PRs
+- Start ISO
+- End ISO
+- Graph Errors
 
-## Contoh timeline yang didukung
-
-```text
-allifgobimbel
-moved this from Todo to In Progress in BE-TASK
-2026-09-18T03:08:03.000Z
-
-...
-
-allifgobimbel
-moved this from In Progress to Ready to Review in BE-TASK
-2026-09-18T04:12:54.000Z
-```
-
-Hasil WIB:
-
-```text
-Start Time: 2026-09-18 10:08:03
-End Time:   18/09/2026 11:12:54
-Hour:       1.0808333333
-```
+Ini penting untuk audit kenapa suatu row mendapatkan jam dari root issue, sub-issue, PR DB, PR gateway, atau hanya DSM.
 
 ## Development
 
@@ -106,13 +199,13 @@ Hour:       1.0808333333
 npm run build
 ```
 
-Setelah rebuild, buka `chrome://extensions` lalu klik tombol reload pada Gitub Gen.
+Setelah rebuild, buka `chrome://extensions` lalu klik **Reload** pada Gitub Gen.
 
 ## Privacy
 
-- Semua parsing DOCX dilakukan lokal di browser.
-- Timeline dibaca dari tab GitHub milik browser user.
-- Tidak ada backend.
-- Tidak ada OAuth App.
-- Tidak ada PAT.
-- Tidak ada upload DSM ke server.
+- parsing DOCX dilakukan lokal di browser
+- GitHub dibaca dari session Chrome yang memang sudah login
+- tidak ada backend
+- tidak ada OAuth App
+- tidak ada PAT
+- tidak ada upload DSM ke server
