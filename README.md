@@ -209,3 +209,28 @@ Setelah rebuild, buka `chrome://extensions` lalu klik **Reload** pada Gitub Gen.
 - tidak ada OAuth App
 - tidak ada PAT
 - tidak ada upload DSM ke server
+
+
+## DSM format compatibility
+
+Parser mendukung variasi format DSM lama dan baru, termasuk:
+
+```text
+Task 1 | [SUPERAPPS-SMBA] FEAT: ...
+GitHub : https://github.com/.../issues/123
+```
+
+```text
+[SUPERAPPS-SMBA] FEAT: ...
+GitHub : https://github.com/.../issues/123
+```
+
+dan format Agustus yang URL issue-nya ditulis langsung tanpa label `GitHub :`:
+
+```text
+Task 1 | [GOEXPERT] ENHANCE: ...
+https://github.com/.../issues/123
+Status : ...
+```
+
+Kolom `Week` dihitung per blok 7 hari dari tanggal DSM pertama pada dokumen, bukan dari nomor tanggal kalender. Ini mengikuti pola rekap bulanan: bila DSM pertama bulan tersebut tanggal 3, maka tanggal 3-9 adalah Minggu 1, 10-16 Minggu 2, dan seterusnya.
