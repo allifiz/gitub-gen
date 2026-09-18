@@ -6,8 +6,8 @@ export default defineConfig({
     target: 'es2022',
     rollupOptions: {
       input: {
-        popup: resolve(__dirname, 'popup.html'),
-        background: resolve(__dirname, 'src/background.ts'),
+        popup: resolve(process.cwd(), 'popup.html'),
+        background: resolve(process.cwd(), 'src/background.ts'),
       },
       output: {
         entryFileNames: (chunk) =>
