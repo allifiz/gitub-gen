@@ -49,20 +49,29 @@ function parseDateLine(line: string): { date: string; time: string } | null {
 
   if (!month) return null;
 
-  const time =
-    match[4] && match[5]
-      ? `${pad(Number(match[4]))}:${match[5]}`
-      : '';
-
   return {
     date: `${pad(day)}-${pad(month)}-${year}`,
-    time,
+    time:
+      match[4] && match[5]
+        ? `${pad(Number(match[4]))}:${match[5]}`
+        : '',
   };
 }
 
-function getWeek(date: string) {
-  const day = Number(date.slice(0, 2));
-  return `Minggu ${Math.floor((day - 1) / 7) + 1}`;
+function parseDsmDate(date: string) {
+  const [day, month, year] = date.split('-').map(Number);
+  return new Date(Date.UTC(year, month - 1, day));
+}
+
+function getWeek(date: string, firstDsmDate: string) {
+  if (!firstDsmDate) return 'Minggu 1';
+
+  const diffMs =
+    parseDsmDate(date).getTime() -
+    parseDsmDate(firstDsmDate).getTime();
+  const diffDays = Math.max(0, Math.floor(diffMs / 86_400_000));
+
+  return `Minggu ${Math.floor(diffDays / 7) + 1}`;
 }
 
 function getSystemType(title: string) {
@@ -84,18 +93,40 @@ function getTicketType(title: string) {
   );
 }
 
-function looksLikeName(line: string, nextLine?: string) {
-  if (!nextLine || !/^Task\s+\d+/i.test(nextLine)) return false;
+function extractTaskTitle(line: string): string | null {
+  const taskPipe = line.match(/^Task\s+\d+\s*\|\s*(.+)$/i);
+  if (taskPipe) return taskPipe[1].trim();
+
+  const numbered = line.match(/^\d+[.)]\s*(\[[^\]]+\].+)$/);
+  if (numbered) return numbered[1].trim();
+
+  if (/^\[[^\]]+\]\s*.+/.test(line)) {
+    return line.trim();
+  }
+
+  return null;
+}
+
+function looksLikeName(
+  line: string,
+  nextLine: string | undefined,
+  wantedAssignee: string,
+) {
+  if (line.trim().toLowerCase() === wantedAssignee.trim().toLowerCase()) {
+    return true;
+  }
+
+  if (!nextLine || !extractTaskTitle(nextLine)) return false;
   if (line.length > 60) return false;
-  if (/^Task\s+/i.test(line)) return false;
-  if (/GitHub|Status|Yang |Kendala|DAILY STANDUP|={2,}/i.test(line)) {
+  if (/GitHub|Status|Yang |Kendala|STAND UP|DAILY STANDUP|={2,}/i.test(line)) {
     return false;
   }
+
   return /^[A-Za-z][A-Za-z .'-]*$/.test(line);
 }
 
 function shouldAppendTitle(line: string) {
-  return !/^(?:[●○•-]|GitHub\s*:|Status\s*:|Yang sudah|Yang akan|Kendala\s*:)/i.test(
+  return !/^(?:[●○•-]|GitHub\s*:|Status\s*:|Yang sudah|Yang akan|Kendala\s*:|Butuh Bantuan\s*:|Deskripsi\s*:)/i.test(
     line,
   );
 }
@@ -118,6 +149,7 @@ export function parseDsmText(rawText: string, wantedAssignee: string): DsmTask[]
 
   const wanted = wantedAssignee.trim().toLowerCase();
   let currentDate = '';
+  let firstDsmDate = '';
   let currentMeetingTime = '';
   let currentPerson = '';
   let currentTask: DraftTask | null = null;
@@ -139,7 +171,7 @@ export function parseDsmText(rawText: string, wantedAssignee: string): DsmTask[]
       status: currentTask.status.trim(),
       priority: '',
       date: currentTask.date,
-      week: getWeek(currentTask.date),
+      week: getWeek(currentTask.date, firstDsmDate),
       dsmStatuses: currentTask.status.trim()
         ? [currentTask.status.trim()]
         : [],
@@ -160,22 +192,27 @@ export function parseDsmText(rawText: string, wantedAssignee: string): DsmTask[]
       flushTask();
       currentDate = parsedDate.date;
       currentMeetingTime = parsedDate.time;
+
+      if (!firstDsmDate) {
+        firstDsmDate = parsedDate.date;
+      }
+
       continue;
     }
 
-    if (looksLikeName(line, nextLine)) {
+    if (looksLikeName(line, nextLine, wantedAssignee)) {
       flushTask();
       currentPerson = line.trim();
       continue;
     }
 
-    const taskMatch = line.match(/^Task\s+\d+\s*\|\s*(.+)$/i);
-    if (taskMatch) {
+    const taskTitle = extractTaskTitle(line);
+    if (taskTitle) {
       flushTask();
 
       if (currentPerson.toLowerCase() === wanted) {
         currentTask = {
-          title: taskMatch[1].trim(),
+          title: taskTitle,
           url: '',
           status: '',
           date: currentDate,
@@ -188,14 +225,14 @@ export function parseDsmText(rawText: string, wantedAssignee: string): DsmTask[]
 
     if (!currentTask) continue;
 
+    // Agustus punya dua format:
+    // "GitHub : https://github.com/..." dan URL polos tanpa prefix "GitHub :".
     const githubMatch = line.match(
-      /GitHub\s*:?[\s]*((?:https?:\/\/)?github\.com\/[^\s/]+\/[^\s/]+\/issues\/\d+)/i,
+      /(https?:\/\/github\.com\/[^\s/]+\/[^\s/]+\/issues\/\d+)/i,
     );
 
     if (githubMatch) {
-      currentTask.url = githubMatch[1].startsWith('http')
-        ? githubMatch[1]
-        : `https://${githubMatch[1]}`;
+      currentTask.url = githubMatch[1];
       continue;
     }
 
@@ -213,7 +250,7 @@ export function parseDsmText(rawText: string, wantedAssignee: string): DsmTask[]
   flushTask();
 
   // Satu URL boleh muncul berkali-kali dalam sebulan.
-  // Yang digabung hanya kemunculan pada URL + tanggal yang sama (mis. DSM 11.00 dan 16.00).
+  // Yang digabung hanya URL + tanggal yang sama, mis. DSM 11.00 dan 16.00.
   const daily = new Map<string, DsmTask>();
 
   for (const task of occurrences) {
