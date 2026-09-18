@@ -435,9 +435,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         return;
       }
 
-      const previousState = await getState();
-
-      if (inMemoryRunning || previousState.running) {
+      if (inMemoryRunning) {
         sendResponse({
           ok: false,
           error: 'Masih ada job yang berjalan.',
