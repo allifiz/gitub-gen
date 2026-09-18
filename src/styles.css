@@ -13,14 +13,17 @@
 body {
   margin: 0;
   min-width: 390px;
+  min-height: 100vh;
+  display: flex;
+  justify-content: center;
   background:
     radial-gradient(circle at top right, rgba(88, 166, 255, 0.18), transparent 38%),
     #0d1117;
 }
 
 .app {
-  width: 390px;
-  padding: 18px;
+  width: min(720px, 100%);
+  padding: 28px 18px 48px;
 }
 
 header {
