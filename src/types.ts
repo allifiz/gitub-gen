@@ -67,7 +67,7 @@ export type EpisodeResult = {
   startIso: string | null;
   endIso: string | null;
   timeSource: TimeSource;
-  statusSourceUrl?: string;
+  statusSourceUrls: string[];
   activitySourceUrls: string[];
   relatedIssueUrls: string[];
   relatedPrUrls: string[];
