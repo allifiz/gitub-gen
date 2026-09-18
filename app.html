@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="id">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Gitub Gen - KPI Generator</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <main class="app">
+      <header>
+        <div>
+          <p class="eyebrow">KPI AUTOMATION</p>
+          <h1>Gitub Gen</h1>
+        </div>
+        <span class="badge">Local</span>
+      </header>
+
+      <section class="card">
+        <label for="assignee">Assignee</label>
+        <input id="assignee" value="Allief" autocomplete="off" />
+
+        <label for="dsmFile">DSM DOCX</label>
+        <input id="dsmFile" type="file" accept=".docx" />
+
+        <button id="generate" class="primary" disabled>
+          Generate KPI Excel
+        </button>
+
+        <p class="hint">
+          Gunakan Chrome yang sudah bisa membuka private issue GO-Bimbel.
+          Tidak perlu OAuth, PAT, atau login ulang.
+        </p>
+      </section>
+
+      <section class="card status-card">
+        <div class="status-row">
+          <span>Status</span>
+          <strong id="status">Pilih file DSM.</strong>
+        </div>
+        <div class="progress-track">
+          <div id="progressBar" class="progress-bar"></div>
+        </div>
+        <p id="detail" class="detail">Belum ada job.</p>
+      </section>
+
+      <section id="previewCard" class="card hidden">
+        <div class="status-row">
+          <span>Issue unik</span>
+          <strong id="issueCount">0</strong>
+        </div>
+        <div id="preview" class="preview"></div>
+      </section>
+    </main>
+
+    <script type="module" src="/src/app.ts"></script>
+  </body>
+</html>
