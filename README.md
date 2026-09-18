@@ -45,17 +45,21 @@ Pastikan Chrome yang sama sudah bisa membuka private issue GO-Bimbel.
 ## Pakai
 
 1. Klik icon extension **Gitub Gen**
-2. Assignee default: `Allief`
-3. Pilih file `BASIC DAILY STANDUP ... .docx`
-4. Extension menampilkan jumlah issue unik yang ditemukan
-5. Klik **Generate KPI Excel**
-6. Extension akan:
+2. Gitub Gen akan terbuka sebagai **tab permanen**, bukan popup
+3. Assignee default: `Allief`
+4. Pilih file `BASIC DAILY STANDUP ... .docx`
+5. Halaman tetap terbuka ketika native file picker muncul
+6. Extension menampilkan jumlah issue unik yang ditemukan
+7. Klik **Generate KPI Excel**
+8. Extension akan:
    - membuka issue GitHub satu per satu sebagai background tab
    - membaca timeline
    - menutup tab otomatis
    - mengunduh `KPI-<Bulan>-<Tahun>.xlsx`
 
 Tidak perlu hover timestamp, DevTools, copy-paste tanggal, atau membuka issue satu per satu.
+
+> UI sengaja dibuka sebagai tab extension biasa. Chrome menutup action popup ketika popup kehilangan fokus (misalnya saat file picker dibuka), jadi upload DOCX tidak diletakkan di popup.
 
 ## Format Excel
 
