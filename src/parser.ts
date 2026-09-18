@@ -29,15 +29,16 @@ type DraftTask = {
   url: string;
   status: string;
   date: string;
+  meetingTime: string;
 };
 
 function pad(value: number) {
   return String(value).padStart(2, '0');
 }
 
-function parseDateLine(line: string): string | null {
+function parseDateLine(line: string): { date: string; time: string } | null {
   const match = line.match(
-    /^(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})(?:\s+Pukul\s+\d{1,2}[.:]\d{2})?/i,
+    /^(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})(?:\s+Pukul\s+(\d{1,2})[.:](\d{2}))?/i,
   );
 
   if (!match) return null;
@@ -48,7 +49,15 @@ function parseDateLine(line: string): string | null {
 
   if (!month) return null;
 
-  return `${pad(day)}-${pad(month)}-${year}`;
+  const time =
+    match[4] && match[5]
+      ? `${pad(Number(match[4]))}:${match[5]}`
+      : '';
+
+  return {
+    date: `${pad(day)}-${pad(month)}-${year}`,
+    time,
+  };
 }
 
 function getWeek(date: string) {
@@ -91,6 +100,15 @@ function shouldAppendTitle(line: string) {
   );
 }
 
+function toComparableDate(date: string) {
+  const [day, month, year] = date.split('-');
+  return `${year}-${month}-${day}`;
+}
+
+function uniqueStrings(values: string[]) {
+  return [...new Set(values.filter(Boolean))];
+}
+
 export function parseDsmText(rawText: string, wantedAssignee: string): DsmTask[] {
   const lines = rawText
     .replace(/\r/g, '')
@@ -100,6 +118,7 @@ export function parseDsmText(rawText: string, wantedAssignee: string): DsmTask[]
 
   const wanted = wantedAssignee.trim().toLowerCase();
   let currentDate = '';
+  let currentMeetingTime = '';
   let currentPerson = '';
   let currentTask: DraftTask | null = null;
 
@@ -121,6 +140,12 @@ export function parseDsmText(rawText: string, wantedAssignee: string): DsmTask[]
       priority: '',
       date: currentTask.date,
       week: getWeek(currentTask.date),
+      dsmStatuses: currentTask.status.trim()
+        ? [currentTask.status.trim()]
+        : [],
+      dsmTimes: currentTask.meetingTime
+        ? [currentTask.meetingTime]
+        : [],
     });
 
     currentTask = null;
@@ -133,7 +158,8 @@ export function parseDsmText(rawText: string, wantedAssignee: string): DsmTask[]
     const parsedDate = parseDateLine(line);
     if (parsedDate) {
       flushTask();
-      currentDate = parsedDate;
+      currentDate = parsedDate.date;
+      currentMeetingTime = parsedDate.time;
       continue;
     }
 
@@ -153,6 +179,7 @@ export function parseDsmText(rawText: string, wantedAssignee: string): DsmTask[]
           url: '',
           status: '',
           date: currentDate,
+          meetingTime: currentMeetingTime,
         };
       }
 
@@ -185,17 +212,20 @@ export function parseDsmText(rawText: string, wantedAssignee: string): DsmTask[]
 
   flushTask();
 
-  const unique = new Map<string, DsmTask>();
+  // Satu URL boleh muncul berkali-kali dalam sebulan.
+  // Yang digabung hanya kemunculan pada URL + tanggal yang sama (mis. DSM 11.00 dan 16.00).
+  const daily = new Map<string, DsmTask>();
 
   for (const task of occurrences) {
-    const existing = unique.get(task.ticketUrl);
+    const key = `${task.ticketUrl}|${task.date}`;
+    const existing = daily.get(key);
 
     if (!existing) {
-      unique.set(task.ticketUrl, task);
+      daily.set(key, task);
       continue;
     }
 
-    unique.set(task.ticketUrl, {
+    daily.set(key, {
       ...existing,
       ticketTitle:
         task.ticketTitle.length > existing.ticketTitle.length
@@ -204,11 +234,23 @@ export function parseDsmText(rawText: string, wantedAssignee: string): DsmTask[]
       systemType: existing.systemType || task.systemType,
       ticketType: existing.ticketType || task.ticketType,
       status: task.status || existing.status,
-      // Date + week sengaja memakai kemunculan pertama.
-      date: existing.date,
-      week: existing.week,
+      dsmStatuses: uniqueStrings([
+        ...existing.dsmStatuses,
+        ...task.dsmStatuses,
+      ]),
+      dsmTimes: uniqueStrings([
+        ...existing.dsmTimes,
+        ...task.dsmTimes,
+      ]),
     });
   }
 
-  return [...unique.values()];
+  return [...daily.values()].sort((a, b) => {
+    const dateCompare = toComparableDate(a.date).localeCompare(
+      toComparableDate(b.date),
+    );
+
+    if (dateCompare !== 0) return dateCompare;
+    return a.ticketUrl.localeCompare(b.ticketUrl);
+  });
 }
