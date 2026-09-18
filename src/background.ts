@@ -483,6 +483,17 @@ function isReadyToReview(status: string) {
   return /\bready\s+to\s+review\b/i.test(normalizeStatus(status));
 }
 
+function isTerminalStatus(status: string) {
+  const normalized = normalizeStatus(status);
+
+  return (
+    isReadyToReview(status) ||
+    /\bstaging\b/i.test(normalized) ||
+    /\bdeployed\b/i.test(normalized) ||
+    /\bdone\b/i.test(normalized)
+  );
+}
+
 function dsmDateToYmd(date: string) {
   const [day, month, year] = date.split('-');
   return `${year}-${month}-${day}`;
@@ -538,7 +549,7 @@ function buildWorkEpisodes(tasks: DsmTask[]): WorkEpisode[] {
 
       if (hasInProgress) {
         for (let cursor = index; cursor < ordered.length; cursor += 1) {
-          if (ordered[cursor].dsmStatuses.some(isReadyToReview)) {
+          if (ordered[cursor].dsmStatuses.some(isTerminalStatus)) {
             endIndex = cursor;
             break;
           }
@@ -746,6 +757,7 @@ function resolveEpisodeResults(
       const prEvents = graph.events
         .filter(
           (event) =>
+            episode.dsmDates.length === 1 &&
             event.sourceKind === 'pull' &&
             startsWithActor(event.text, githubUsername) &&
             eventBelongsToEpisode(event.timestamp, episode),
