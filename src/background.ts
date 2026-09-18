@@ -59,7 +59,20 @@ async function waitForTabComplete(tabId: number, timeoutMs = 30_000) {
   });
 }
 
-function scrapeTimelineInPage() {
+async function scrapeTimelineInPage() {
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    const loadMore = Array.from(
+      document.querySelectorAll<HTMLButtonElement>('button'),
+    ).find((button) =>
+      /^(load more|show more activity)/i.test(button.innerText.trim()),
+    );
+
+    if (!loadMore) break;
+
+    loadMore.click();
+    await new Promise((resolve) => setTimeout(resolve, 650));
+  }
+
   const bodyText = document.body?.innerText ?? '';
   const currentUrl = window.location.href;
 
