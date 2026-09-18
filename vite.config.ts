@@ -6,7 +6,7 @@ export default defineConfig({
     target: 'es2022',
     rollupOptions: {
       input: {
-        popup: resolve(process.cwd(), 'popup.html'),
+        app: resolve(process.cwd(), 'app.html'),
         background: resolve(process.cwd(), 'src/background.ts'),
       },
       output: {
