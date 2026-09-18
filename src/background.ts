@@ -3,6 +3,28 @@ import type { DsmTask, JobState, TimelineResult } from './types';
 
 const STATE_KEY = 'gitubGenJobState';
 
+
+chrome.action.onClicked.addListener(async () => {
+  const appUrl = chrome.runtime.getURL('app.html');
+  const tabs = await chrome.tabs.query({});
+  const existing = tabs.find((tab) => tab.url === appUrl);
+
+  if (typeof existing?.id === 'number') {
+    await chrome.tabs.update(existing.id, { active: true });
+
+    if (typeof existing.windowId === 'number') {
+      await chrome.windows.update(existing.windowId, { focused: true });
+    }
+
+    return;
+  }
+
+  await chrome.tabs.create({
+    url: appUrl,
+    active: true,
+  });
+});
+
 const initialState: JobState = {
   running: false,
   current: 0,
