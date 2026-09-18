@@ -476,7 +476,8 @@ function normalizeStatus(status: string) {
 }
 
 function isInProgress(status: string) {
-  return /\bin\s*progress\b/i.test(normalizeStatus(status));
+  const normalized = normalizeStatus(status);
+  return /\bin\s*(?:progress|porgress)\b/i.test(normalized);
 }
 
 function isReadyToReview(status: string) {
