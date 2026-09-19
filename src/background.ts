@@ -573,7 +573,7 @@ function buildStatusPairs(graph: WorkGraph): StatusPair[] {
 
       if (
         openStart &&
-        /\bto\s+Ready to Review\b/i.test(event.text) &&
+        /\bto\s+(?:Ready to Review|Staging)\b/i.test(event.text) &&
         new Date(event.timestamp).getTime() >
           new Date(openStart.timestamp).getTime()
       ) {
@@ -658,7 +658,7 @@ function clusterActivityEvents(
       new Date(event.timestamp).getTime() -
       new Date(previous.timestamp).getTime();
 
-    if (gap <= ACTIVITY_CLUSTER_GAP_MS) {
+    if (gap < ACTIVITY_CLUSTER_GAP_MS) {
       lastCluster.push(event);
     } else {
       clusters.push([event]);
