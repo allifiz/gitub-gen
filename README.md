@@ -1,44 +1,43 @@
 # Gitub Gen
 
-Generator KPI dari **DSM DOCX + work graph GitHub** tanpa OAuth, PAT, GitHub CLI, atau approval organization.
+Generator KPI dari **DSM DOCX + GitHub timeline** tanpa OAuth, PAT, GitHub CLI, atau approval organization.
 
-Extension berjalan di Chrome yang **sudah login GitHub kantor**. URL issue dari DSM diperlakukan sebagai **root ticket**, lalu Gitub Gen membuka timeline GitHub di background dan mengikuti hubungan kerja yang relevan:
+Extension berjalan di Chrome yang **sudah login GitHub kantor**.
 
-- root issue
-- sub-issue
-- parent issue (jika root ternyata sub-ticket)
-- linked pull request dari root/sub/parent yang relevan
+## Model yang dipakai
 
-Tujuannya supaya pekerjaan yang sebenarnya terjadi hanya di DB sub-ticket atau hanya di gateway/main ticket tetap terbaca.
+Aturan utama sekarang sengaja dibuat sederhana:
 
-## Model data: Work Episode
+> **1 row KPI = 1 Ticket URL + 1 tanggal pengerjaan di DSM**
 
-Gitub Gen **tidak lagi memakai aturan 1 issue = 1 row**.
+DSM menentukan row apa saja yang harus masuk ke KPI.
 
-Satu URL issue boleh menghasilkan beberapa row KPI kalau DSM menunjukkan ticket tersebut dikerjakan lagi.
+GitHub hanya dipakai untuk mencoba mengisi:
+
+- Start Time
+- End Time
+- Hour
+
+Jadi Gitub Gen tidak lagi mencoba menebak episode kerja lintas hari.
+
+Jika ticket yang sama muncul lagi di tanggal berbeda, row baru tetap dibuat.
 
 Contoh:
 
 ```text
-8 Sep   In Progress
-9 Sep   Ready to Review
-        => Episode 1
-
-10 Sep  In Progress
-11 Sep  Ready to Review
-        => Episode 2
-
-12 Sep  Staging + change request dikerjakan lagi
-        => Episode 3
+21 Aug  #3697
+24 Aug  #3697
 ```
 
-DSM pada tanggal yang sama (mis. 11.00 dan 16.00) digabung menjadi satu entri harian, tetapi seluruh status pada hari tersebut tetap disimpan.
+menjadi dua row KPI.
 
-## Penentuan waktu
+Jika ticket yang sama muncul pada DSM 11.00 dan 16.00 di tanggal yang sama, parser menggabungkannya menjadi satu row harian dan menyimpan semua status/jam DSM untuk Diagnostics.
 
-Urutan sumber waktu:
+## Penentuan Start Time dan End Time
 
-### 1. Status issue dalam work graph
+Urutannya hanya tiga langkah.
+
+### 1. Status pair pada tanggal DSM
 
 Gitub Gen mencari pasangan:
 
@@ -48,11 +47,20 @@ to In Progress
 to Ready to Review
 ```
 
-bukan hanya di root issue, tetapi juga di related issue/sub-issue.
+dalam work graph ticket.
 
-Kalau beberapa issue dalam work graph sama-sama punya pasangan status pada episode yang sama:
+Work graph tetap boleh berisi:
 
-- Start = status In Progress paling awal
+- root issue dari DSM
+- sub-issue
+- parent issue jika root ternyata sub-ticket
+- linked pull request dari issue terkait
+
+Status pair hanya dipakai jika **Start dan End sama-sama terjadi pada tanggal DSM row tersebut**.
+
+Jika beberapa related issue punya status pair pada tanggal yang sama:
+
+- Start = In Progress paling awal
 - End = Ready to Review paling akhir
 
 Time Source:
@@ -60,70 +68,91 @@ Time Source:
 - `ROOT_ISSUE_STATUS`
 - `RELATED_ISSUE_STATUS`
 
-### 2. Related PR activity
+### 2. Related activity pada tanggal DSM
 
-Kalau status tidak diubah tetapi DSM membuktikan ticket dikerjakan lagi, Gitub Gen melihat aktivitas pull request milik GitHub username yang diisi di UI.
+Kalau tidak ada status pair yang valid, Gitub Gen mencari aktivitas milik GitHub username yang diisi di UI pada **linked PR di work graph** dan hanya pada tanggal DSM tersebut.
 
 Contoh:
 
 ```text
-Root: go-superapp-api#100
-├── PR gateway #700
-└── Sub issue db-kbm#200
-    └── PR DB #555
+Root issue
+├── PR gateway
+└── Sub-issue DB
+    └── PR DB
 ```
 
-Jika pada tanggal DSM hanya PR DB yang aktif, sumber waktu bisa berasal dari PR DB. Jika gateway dan DB sama-sama aktif, aktivitas keduanya masuk activity pool.
+Kalau hanya PR DB yang aktif hari itu, PR DB dipakai.
 
-Untuk mencegah durasi palsu karena malam/overnight, fallback PR activity otomatis hanya dihitung untuk **episode satu tanggal**.
+Kalau PR gateway dan PR DB sama-sama aktif, activity pool menggabungkan keduanya.
+
+Jika ada minimal 2 timestamp:
+
+```text
+09:43 activity
+10:12 activity
+11:07 activity
+```
+
+maka:
+
+```text
+Start = 09:43
+End   = 11:07
+```
 
 Time Source:
 
-- `RELATED_PR_ACTIVITY`
-- `PR_ACTIVITY_PARTIAL`
+```text
+RELATED_ACTIVITY
+```
 
-### 3. DSM only
+### 3. Bukti waktu tidak cukup
 
-Kalau DSM mencatat pekerjaan tetapi GitHub tidak memiliki status pair atau aktivitas PR yang cukup:
+Kalau hanya ada satu related activity:
+
+```text
+INSUFFICIENT_ACTIVITY
+```
+
+Kalau tidak ada:
+
+```text
+DSM_ONLY
+```
+
+Untuk dua kondisi tersebut:
 
 - row KPI tetap dibuat
 - Start Time kosong
 - End Time kosong
 - Hour kosong
-- Diagnostics = `DSM_ONLY`
 
-Gitub Gen tidak mengarang durasi dari jam standup.
+Gitub Gen tidak menggunakan jam standup sebagai jam kerja dan tidak mengarang durasi.
 
-## Work graph
+## Kenapa tetap ada work graph?
 
-Contoh struktur yang didukung:
+URL di DSM hanya dianggap sebagai **root / entry point**.
+
+Pekerjaan sebenarnya bisa terjadi:
 
 ```text
 ROOT ISSUE
-│
-├── linked PR gateway
-│
+├── PR gateway
 └── SUB-ISSUE DB
-    └── linked PR DB
+    └── PR DB
 ```
 
-atau kebalikannya:
+atau kebalikannya.
 
-```text
-ROOT ISSUE DB
-│
-├── linked PR DB
-│
-└── SUB-ISSUE gateway
-    └── linked PR gateway
-```
+Jadi crawler tetap mencari related issue dan PR agar perubahan yang hanya terjadi di DB atau hanya di gateway tetap bisa ditemukan.
 
-Jika root ternyata sebuah sub-ticket dan memiliki parent, parent boleh menyumbang linked PR. Namun crawler tidak menyapu seluruh sibling sub-ticket milik parent agar satu KPI tidak menarik pekerjaan yang tidak terkait.
+Namun graph hanya membantu **mencari bukti pada tanggal DSM**. Graph tidak lagi dipakai untuk menyusun episode kerja lintas hari.
 
-Batas crawler:
+Safeguard:
 
 - max depth: 2
 - max graph nodes: 24
+- saat naik ke parent issue, sibling sub-issue tidak ikut disapu
 
 ## Install
 
@@ -156,15 +185,14 @@ Pastikan Chrome yang sama sudah bisa membuka private issue GO-Bimbel.
 
 Gitub Gen kemudian:
 
-- membangun work episode
-- membuka root issue otomatis
-- menemukan sub-issue / parent / linked PR
+- parse DSM
+- membuat 1 row per Ticket + Date
+- crawl work graph tiap root issue
 - membaca exact `relative-time[datetime]`
-- mencocokkan aktivitas dengan tanggal episode DSM
+- mencari status pair pada tanggal row
+- jika tidak ada, mencari related PR activity pada tanggal row
 - mengubah UTC ke WIB
 - membuat Excel
-
-Tidak perlu hover timestamp, DevTools, atau membuka issue satu per satu.
 
 ## Excel
 
@@ -173,25 +201,42 @@ Sheet **KPI**:
 | Assignee | Type | Ticket Title | Ticket URL | Type | Status | Priority | Date | Week | Start Time | End Time | Hour |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 
-Ticket URL tetap root URL dari DSM walaupun waktu pengerjaan ditemukan dari sub-issue atau PR repo lain.
+Sheet **Diagnostics** mencatat:
 
-Sheet **Diagnostics** mencatat per episode:
-
-- Episode ID
+- Row Key
 - Root Ticket
-- DSM Dates
+- Date
 - DSM Statuses
 - DSM Times
 - Time Source
 - Status Sources
 - Activity Sources
+- Activity Count
 - Related Issues
 - Related PRs
 - Start ISO
 - End ISO
 - Graph Errors
 
-Ini penting untuk audit kenapa suatu row mendapatkan jam dari root issue, sub-issue, PR DB, PR gateway, atau hanya DSM.
+Dengan ini kita bisa audit kenapa row tertentu mendapat jam atau dibiarkan kosong.
+
+## DSM format compatibility
+
+Parser mendukung variasi format DSM lama dan baru, termasuk:
+
+```text
+Task 1 | [SUPERAPPS-SMBA] FEAT: ...
+GitHub : https://github.com/.../issues/123
+```
+
+```text
+[SUPERAPPS-SMBA] FEAT: ...
+GitHub : https://github.com/.../issues/123
+```
+
+dan URL issue polos tanpa prefix `GitHub :`.
+
+Kolom `Week` dihitung per blok 7 hari dari tanggal DSM pertama pada dokumen.
 
 ## Development
 
@@ -209,28 +254,3 @@ Setelah rebuild, buka `chrome://extensions` lalu klik **Reload** pada Gitub Gen.
 - tidak ada OAuth App
 - tidak ada PAT
 - tidak ada upload DSM ke server
-
-
-## DSM format compatibility
-
-Parser mendukung variasi format DSM lama dan baru, termasuk:
-
-```text
-Task 1 | [SUPERAPPS-SMBA] FEAT: ...
-GitHub : https://github.com/.../issues/123
-```
-
-```text
-[SUPERAPPS-SMBA] FEAT: ...
-GitHub : https://github.com/.../issues/123
-```
-
-dan format Agustus yang URL issue-nya ditulis langsung tanpa label `GitHub :`:
-
-```text
-Task 1 | [GOEXPERT] ENHANCE: ...
-https://github.com/.../issues/123
-Status : ...
-```
-
-Kolom `Week` dihitung per blok 7 hari dari tanggal DSM pertama pada dokumen, bukan dari nomor tanggal kalender. Ini mengikuti pola rekap bulanan: bila DSM pertama bulan tersebut tanggal 3, maka tanggal 3-9 adalah Minggu 1, 10-16 Minggu 2, dan seterusnya.
