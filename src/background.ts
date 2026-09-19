@@ -1054,10 +1054,7 @@ function compareTasksChronologically(a: DsmTask, b: DsmTask) {
   return aMinutes - bMinutes;
 }
 
-function buildUniqueTicketRows(
-  tasks: DsmTask[],
-  resultByRow: Map<string, DailyResult>,
-) {
+function buildUniqueTicketRows(tasks: DsmTask[]) {
   const grouped = new Map<string, DsmTask[]>();
 
   for (const task of tasks) {
@@ -1071,7 +1068,6 @@ function buildUniqueTicketRows(
     .map(([ticketUrl, group]) => {
       const ordered = [...group].sort(compareTasksChronologically);
       const first = ordered[0];
-      const last = ordered[ordered.length - 1];
 
       const bestTitle = ordered.reduce((best, task) =>
         task.ticketTitle.length > best.ticketTitle.length
@@ -1087,48 +1083,10 @@ function buildUniqueTicketRows(
       const systemType =
         ordered.find((task) => task.systemType.trim())?.systemType ?? '';
 
-      const ticketType =
-        ordered.find((task) => task.ticketType.trim())?.ticketType ?? '';
-
       const priority =
         [...ordered]
           .reverse()
           .find((task) => task.priority.trim())?.priority ?? '';
-
-      const rowResults = ordered
-        .map((task) => resultByRow.get(rowKey(task)))
-        .filter((result): result is DailyResult => Boolean(result));
-
-      const starts = rowResults
-        .map((result) => result.startIso)
-        .filter((value): value is string => Boolean(value))
-        .sort(
-          (a, b) =>
-            new Date(a).getTime() - new Date(b).getTime(),
-        );
-
-      const ends = rowResults
-        .map((result) => result.endIso)
-        .filter((value): value is string => Boolean(value))
-        .sort(
-          (a, b) =>
-            new Date(a).getTime() - new Date(b).getTime(),
-        );
-
-      let totalHour = 0;
-      let completeRows = 0;
-
-      for (const result of rowResults) {
-        const hour = calculateHours(
-          result.startIso,
-          result.endIso,
-        );
-
-        if (typeof hour === 'number') {
-          totalHour += hour;
-          completeRows += 1;
-        }
-      }
 
       return {
         sortTask: first,
@@ -1137,17 +1095,10 @@ function buildUniqueTicketRows(
           systemType,
           bestTitle,
           ticketUrl,
-          ticketType,
           lastStatus,
           priority,
           first.date,
           first.week,
-          formatStartTime(starts[0] ?? null),
-          formatEndTime(ends[ends.length - 1] ?? null),
-          completeRows > 0
-            ? Number(totalHour.toFixed(10))
-            : '',
-          ordered.length,
         ],
       };
     })
@@ -1227,21 +1178,13 @@ async function buildAndDownload(
     'Type',
     'Ticket Title',
     'Ticket URL',
-    'Type',
     'Status',
     'Priority',
     'Date',
     'Week',
-    'First Start Time',
-    'Last End Time',
-    'Total Hour',
-    'Occurrence Count',
   ];
 
-  const uniqueRows = buildUniqueTicketRows(
-    tasks,
-    resultByRow,
-  );
+  const uniqueRows = buildUniqueTicketRows(tasks);
 
   const uniqueSheet = XLSX.utils.aoa_to_sheet([
     uniqueHeaders,
@@ -1253,15 +1196,10 @@ async function buildAndDownload(
     { wch: 14 },
     { wch: 58 },
     { wch: 58 },
-    { wch: 14 },
     { wch: 20 },
     { wch: 12 },
     { wch: 13 },
     { wch: 12 },
-    { wch: 22 },
-    { wch: 22 },
-    { wch: 14 },
-    { wch: 18 },
   ];
 
   XLSX.utils.book_append_sheet(
