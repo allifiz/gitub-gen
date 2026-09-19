@@ -405,6 +405,15 @@ async function scrapeProjectViewInBrowser(
       .replace(/\s+(?:sort|filter).*$/i, '')
       .toLowerCase();
 
+  const getSystemType = (title: string) => {
+    const bracket =
+      title.match(/^\s*\[([^\]]+)\]/)?.[1] ?? '';
+
+    if (!bracket) return '';
+
+    return bracket.split('-')[0].trim();
+  };
+
   const headerByIndex = new Map<number, string>();
   const orderedHeaders: string[] = [];
 
@@ -597,7 +606,7 @@ async function scrapeProjectViewInBrowser(
 
       const next: ProjectRecapRow = {
         assignee: assigneeLabel,
-        systemType: getSystemTypeFromTitle(title),
+        systemType: getSystemType(title),
         ticketTitle: title,
         ticketUrl,
         status,
