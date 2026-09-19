@@ -8,6 +8,7 @@ export type DsmTask = {
   priority: string;
   date: string;
   week: string;
+  sessionTime: string;
   dsmStatuses: string[];
   dsmTimes: string[];
 };
@@ -49,12 +50,16 @@ export type DailyResult = {
   rowKey: string;
   rootUrl: string;
   date: string;
+  sessionTime: string;
   startIso: string | null;
   endIso: string | null;
   timeSource: TimeSource;
   statusSourceUrls: string[];
   activitySourceUrls: string[];
   activityCount: number;
+  clusterIndex: number | null;
+  clusterStartIso: string | null;
+  clusterEndIso: string | null;
   relatedIssueUrls: string[];
   relatedPrUrls: string[];
   graphErrors: string[];
