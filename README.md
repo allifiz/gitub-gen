@@ -260,12 +260,45 @@ Gitub Gen kemudian:
 
 ## Excel
 
-Sheet **KPI** tetap:
+### KPI
+
+Sheet **KPI** tetap bersumber dari DSM + GitHub timeline:
 
 | Assignee | Type | Ticket Title | Ticket URL | Type | Status | Priority | Date | Week | Start Time | End Time | Hour |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 
 Sesi DSM tidak ditambahkan ke sheet KPI agar format lama tetap kompatibel. Jika ticket/date sama muncul dua kali, Start/End yang berbeda menunjukkan sesi masing-masing.
+
+### Rekap Tiket Unik
+
+Sheet **Rekap Tiket Unik** tidak menggunakan hasil parsing DSM sebagai daftar ticket.
+
+Sumbernya langsung dari GitHub Project:
+
+```text
+https://github.com/orgs/GO-Bimbel/projects/11/views/1
+```
+
+Extension membuat filter otomatis dari bulan/tahun DSM dan GitHub username:
+
+```text
+year:2026 month:Agustus assignee:allifgobimbel
+```
+
+Lalu Project view dibuka memakai session Chrome yang sudah login. Karena GitHub Projects memakai virtualized rows, extension melakukan scroll dan mengumpulkan setiap issue yang muncul sampai bagian bawah stabil.
+
+Ticket dideduplikasi berdasarkan URL issue GitHub.
+
+Kolom sheet:
+
+| Assignee | Type | Ticket Title | Ticket URL | Status | Priority | Date | Week |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+
+Nilai Title, URL, Status, Priority, Date, dan Week dibaca dari row GitHub Project. Type diturunkan dari prefix judul seperti `[SUPERAPPS-SMBA]` menjadi `SUPERAPPS`.
+
+Dengan model ini, jumlah ticket rekap tidak bergantung pada format DSM dan pasangan Ticket Title/Ticket URL berasal dari item Project yang sama.
+
+### Diagnostics
 
 Sheet **Diagnostics** menyimpan detail:
 
