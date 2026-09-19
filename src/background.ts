@@ -321,12 +321,6 @@ async function scrapeGithubPageInBrowser(): Promise<PageSnapshot> {
 }
 
 
-function getSystemTypeFromTitle(title: string) {
-  const bracket = title.match(/^\s*\[([^\]]+)\]/)?.[1] ?? '';
-  if (!bracket) return '';
-  return bracket.split('-')[0].trim();
-}
-
 function getDsmMonthContext(tasks: DsmTask[]) {
   const firstDate = tasks[0]?.date ?? '';
   const [, month = '', year = ''] = firstDate.split('-');
