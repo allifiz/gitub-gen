@@ -1,12 +1,11 @@
 import * as XLSX from 'xlsx';
 import type {
+  DailyResult,
   DsmTask,
-  EpisodeResult,
   GraphEvent,
   GraphNode,
   JobState,
   TimeSource,
-  WorkEpisode,
   WorkGraph,
 } from './types';
 
@@ -41,7 +40,6 @@ type QueueItem = {
 };
 
 type StatusPair = {
-  key: string;
   sourceUrl: string;
   startIso: string;
   endIso: string;
@@ -133,22 +131,6 @@ function canonicalGithubUrl(rawUrl: string) {
   }
 }
 
-function classifyGithubUrl(url: string): 'issue' | 'pull' | null {
-  try {
-    const pathname = new URL(url).pathname;
-    if (/^\/[^/]+\/[^/]+\/issues\/\d+\/?$/.test(pathname)) {
-      return 'issue';
-    }
-    if (/^\/[^/]+\/[^/]+\/pull\/\d+\/?$/.test(pathname)) {
-      return 'pull';
-    }
-  } catch {
-    return null;
-  }
-
-  return null;
-}
-
 async function scrapeGithubPageInBrowser(): Promise<PageSnapshot> {
   for (let attempt = 0; attempt < 12; attempt += 1) {
     const loadMore = Array.from(
@@ -163,7 +145,8 @@ async function scrapeGithubPageInBrowser(): Promise<PageSnapshot> {
     await new Promise((resolve) => setTimeout(resolve, 650));
   }
 
-  const currentUrl = `https://github.com${window.location.pathname.replace(/\/$/, '')}`;
+  const currentUrl =
+    `https://github.com${window.location.pathname.replace(/\/$/, '')}`;
   const pathname = window.location.pathname;
   const kind: 'issue' | 'pull' = /\/pull\/\d+\/?$/.test(pathname)
     ? 'pull'
@@ -205,18 +188,25 @@ async function scrapeGithubPageInBrowser(): Promise<PageSnapshot> {
                 const url = new URL(anchor.href);
                 if (url.hostname !== 'github.com') return null;
 
-                const clean = `https://github.com${url.pathname.replace(/\/$/, '')}`;
+                const clean =
+                  `https://github.com${url.pathname.replace(/\/$/, '')}`;
 
                 if (
                   /^\/[^/]+\/[^/]+\/issues\/\d+\/?$/.test(url.pathname)
                 ) {
-                  return { url: clean, kind: 'issue' as const };
+                  return {
+                    url: clean,
+                    kind: 'issue' as const,
+                  };
                 }
 
                 if (
                   /^\/[^/]+\/[^/]+\/pull\/\d+\/?$/.test(url.pathname)
                 ) {
-                  return { url: clean, kind: 'pull' as const };
+                  return {
+                    url: clean,
+                    kind: 'pull' as const,
+                  };
                 }
               } catch {
                 return null;
@@ -251,7 +241,8 @@ async function scrapeGithubPageInBrowser(): Promise<PageSnapshot> {
     ).values(),
   ).sort(
     (a, b) =>
-      new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime(),
+      new Date(a.timestamp).getTime() -
+      new Date(b.timestamp).getTime(),
   );
 
   const relationMap = new Map<string, PageRelation>();
@@ -272,6 +263,7 @@ async function scrapeGithubPageInBrowser(): Promise<PageSnapshot> {
 
       for (const link of event.links) {
         if (relation === 'linked_pr' && link.kind !== 'pull') continue;
+
         if (
           (relation === 'sub_issue' || relation === 'parent_issue') &&
           link.kind !== 'issue'
@@ -420,7 +412,7 @@ async function crawlWorkGraph(rootUrl: string): Promise<WorkGraph> {
         if (current.depth >= MAX_GRAPH_DEPTH) continue;
 
         if (relation.relation === 'sub_issue') {
-          // Saat naik ke parent issue, jangan ikut menyapu sibling sub-issue.
+          // Kalau root ternyata naik ke parent, jangan menyapu sibling sub-issue.
           if (current.mode === 'parent') continue;
 
           queue.push({
@@ -465,34 +457,11 @@ async function crawlWorkGraph(rootUrl: string): Promise<WorkGraph> {
     nodes,
     events: events.sort(
       (a, b) =>
-        new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime(),
+        new Date(a.timestamp).getTime() -
+        new Date(b.timestamp).getTime(),
     ),
     errors,
   };
-}
-
-function normalizeStatus(status: string) {
-  return status.trim().toLowerCase().replace(/\s+/g, ' ');
-}
-
-function isInProgress(status: string) {
-  const normalized = normalizeStatus(status);
-  return /\bin\s*(?:progress|porgress)\b/i.test(normalized);
-}
-
-function isReadyToReview(status: string) {
-  return /\bready\s+to\s+review\b/i.test(normalizeStatus(status));
-}
-
-function isTerminalStatus(status: string) {
-  const normalized = normalizeStatus(status);
-
-  return (
-    isReadyToReview(status) ||
-    /\bstaging\b/i.test(normalized) ||
-    /\bdeployed\b/i.test(normalized) ||
-    /\bdone\b/i.test(normalized)
-  );
 }
 
 function dsmDateToYmd(date: string) {
@@ -519,83 +488,19 @@ function uniqueStrings(values: string[]) {
   return [...new Set(values.filter(Boolean))];
 }
 
-function buildWorkEpisodes(tasks: DsmTask[]): WorkEpisode[] {
-  const grouped = new Map<string, DsmTask[]>();
+function rowKey(task: DsmTask) {
+  return `${canonicalGithubUrl(task.ticketUrl)}|${task.date}`;
+}
 
-  for (const task of tasks) {
-    const rootUrl = canonicalGithubUrl(task.ticketUrl);
-    const current = grouped.get(rootUrl) ?? [];
-    current.push({
-      ...task,
-      ticketUrl: rootUrl,
-    });
-    grouped.set(rootUrl, current);
-  }
+function startsWithActor(text: string, username: string) {
+  const firstLine = text.split('\n')[0]?.trim().toLowerCase() ?? '';
+  return firstLine === username.trim().toLowerCase();
+}
 
-  const episodes: WorkEpisode[] = [];
-
-  for (const [rootUrl, group] of grouped) {
-    const ordered = [...group].sort((a, b) =>
-      dsmDateToYmd(a.date).localeCompare(dsmDateToYmd(b.date)),
-    );
-
-    let index = 0;
-    let episodeNumber = 1;
-
-    while (index < ordered.length) {
-      const startTask = ordered[index];
-      const hasInProgress = startTask.dsmStatuses.some(isInProgress);
-
-      let endIndex = index;
-
-      if (hasInProgress) {
-        for (let cursor = index; cursor < ordered.length; cursor += 1) {
-          if (ordered[cursor].dsmStatuses.some(isTerminalStatus)) {
-            endIndex = cursor;
-            break;
-          }
-        }
-      }
-
-      const episodeTasks = ordered.slice(index, endIndex + 1);
-      const finalTask = episodeTasks[episodeTasks.length - 1];
-      const bestTitle = episodeTasks.reduce((best, task) =>
-        task.ticketTitle.length > best.ticketTitle.length ? task : best,
-      ).ticketTitle;
-
-      episodes.push({
-        id: `${rootUrl}|episode-${episodeNumber}`,
-        rootUrl,
-        assignee: startTask.assignee,
-        systemType: startTask.systemType,
-        ticketTitle: bestTitle,
-        ticketType: startTask.ticketType,
-        priority: startTask.priority,
-        status: finalTask.status,
-        date: startTask.date,
-        week: startTask.week,
-        dsmDates: uniqueStrings(episodeTasks.map((task) => task.date)),
-        dsmStatuses: uniqueStrings(
-          episodeTasks.flatMap((task) => task.dsmStatuses),
-        ),
-        dsmTimes: uniqueStrings(
-          episodeTasks.flatMap((task) => task.dsmTimes),
-        ),
-      });
-
-      index = endIndex + 1;
-      episodeNumber += 1;
-    }
-  }
-
-  return episodes.sort((a, b) => {
-    const dateCompare = dsmDateToYmd(a.date).localeCompare(
-      dsmDateToYmd(b.date),
-    );
-
-    if (dateCompare !== 0) return dateCompare;
-    return a.rootUrl.localeCompare(b.rootUrl);
-  });
+function isNoiseActivity(text: string) {
+  return /(?:moved this from|assigned|mentioned this|subscribed|unsubscribed|added this to|removed this from)/i.test(
+    text,
+  );
 }
 
 function buildStatusPairs(graph: WorkGraph): StatusPair[] {
@@ -614,14 +519,17 @@ function buildStatusPairs(graph: WorkGraph): StatusPair[] {
   for (const [sourceUrl, issueEvents] of byIssue) {
     const ordered = [...issueEvents].sort(
       (a, b) =>
-        new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime(),
+        new Date(a.timestamp).getTime() -
+        new Date(b.timestamp).getTime(),
     );
 
     let openStart: GraphEvent | null = null;
 
     for (const event of ordered) {
       if (/\bto\s+In Progress\b/i.test(event.text)) {
-        openStart = event;
+        if (!openStart) {
+          openStart = event;
+        }
         continue;
       }
 
@@ -632,7 +540,6 @@ function buildStatusPairs(graph: WorkGraph): StatusPair[] {
           new Date(openStart.timestamp).getTime()
       ) {
         pairs.push({
-          key: `${sourceUrl}|${openStart.timestamp}|${event.timestamp}`,
           sourceUrl,
           startIso: openStart.timestamp,
           endIso: event.timestamp,
@@ -643,193 +550,149 @@ function buildStatusPairs(graph: WorkGraph): StatusPair[] {
     }
   }
 
-  return pairs.sort(
-    (a, b) =>
-      new Date(a.startIso).getTime() - new Date(b.startIso).getTime(),
-  );
+  return pairs;
 }
 
-function eventBelongsToEpisode(
-  timestamp: string,
-  episode: WorkEpisode,
-) {
-  const dates = new Set(episode.dsmDates.map(dsmDateToYmd));
-  return dates.has(eventDateWib(timestamp));
-}
-
-function startsWithActor(text: string, username: string) {
-  const firstLine = text.split('\n')[0]?.trim().toLowerCase() ?? '';
-  return firstLine === username.trim().toLowerCase();
-}
-
-function resolveEpisodeResults(
-  episodes: WorkEpisode[],
-  graphs: Map<string, WorkGraph>,
+function resolveDailyTask(
+  task: DsmTask,
+  graph: WorkGraph,
   githubUsername: string,
-): EpisodeResult[] {
-  const results: EpisodeResult[] = [];
+): DailyResult {
+  const rootUrl = canonicalGithubUrl(task.ticketUrl);
+  const targetDate = dsmDateToYmd(task.date);
 
-  const episodesByRoot = new Map<string, WorkEpisode[]>();
-  for (const episode of episodes) {
-    const current = episodesByRoot.get(episode.rootUrl) ?? [];
-    current.push(episode);
-    episodesByRoot.set(episode.rootUrl, current);
+  const relatedIssueUrls = uniqueStrings(
+    graph.nodes
+      .filter((node) => node.kind === 'issue')
+      .map((node) => node.url),
+  );
+
+  const relatedPrUrls = uniqueStrings(
+    graph.nodes
+      .filter((node) => node.kind === 'pull')
+      .map((node) => node.url),
+  );
+
+  const matchingPairs = buildStatusPairs(graph).filter(
+    (pair) =>
+      eventDateWib(pair.startIso) === targetDate &&
+      eventDateWib(pair.endIso) === targetDate,
+  );
+
+  if (matchingPairs.length > 0) {
+    const startIso = matchingPairs
+      .map((pair) => pair.startIso)
+      .sort(
+        (a, b) =>
+          new Date(a).getTime() - new Date(b).getTime(),
+      )[0];
+
+    const endIso = matchingPairs
+      .map((pair) => pair.endIso)
+      .sort(
+        (a, b) =>
+          new Date(b).getTime() - new Date(a).getTime(),
+      )[0];
+
+    const statusSourceUrls = uniqueStrings(
+      matchingPairs.map((pair) => pair.sourceUrl),
+    );
+
+    const timeSource: TimeSource =
+      statusSourceUrls.length === 1 &&
+      statusSourceUrls[0] === rootUrl
+        ? 'ROOT_ISSUE_STATUS'
+        : 'RELATED_ISSUE_STATUS';
+
+    return {
+      rowKey: rowKey(task),
+      rootUrl,
+      date: task.date,
+      startIso,
+      endIso,
+      timeSource,
+      statusSourceUrls,
+      activitySourceUrls: [],
+      activityCount: 0,
+      relatedIssueUrls,
+      relatedPrUrls,
+      graphErrors: graph.errors,
+    };
   }
 
-  for (const [rootUrl, rootEpisodes] of episodesByRoot) {
-    const graph =
-      graphs.get(rootUrl) ??
-      ({
-        rootUrl,
-        nodes: [],
-        events: [],
-        errors: ['Work graph tidak tersedia.'],
-      } satisfies WorkGraph);
-
-    const statusPairs = buildStatusPairs(graph);
-    const usedPairs = new Set<string>();
-
-    const relatedIssueUrls = uniqueStrings(
-      graph.nodes
-        .filter((node) => node.kind === 'issue')
-        .map((node) => node.url),
-    );
-    const relatedPrUrls = uniqueStrings(
-      graph.nodes
-        .filter((node) => node.kind === 'pull')
-        .map((node) => node.url),
+  const activity = graph.events
+    .filter(
+      (event) =>
+        event.sourceKind === 'pull' &&
+        eventDateWib(event.timestamp) === targetDate &&
+        startsWithActor(event.text, githubUsername) &&
+        !isNoiseActivity(event.text),
+    )
+    .sort(
+      (a, b) =>
+        new Date(a.timestamp).getTime() -
+        new Date(b.timestamp).getTime(),
     );
 
-    for (const episode of rootEpisodes) {
-      const matchingPairs = statusPairs.filter((pair) => {
-        if (usedPairs.has(pair.key)) return false;
+  const uniqueActivity = Array.from(
+    new Map(
+      activity.map((event) => [
+        `${event.sourceUrl}|${event.timestamp}|${event.text.replace(/\s+/g, ' ')}`,
+        event,
+      ]),
+    ).values(),
+  );
 
-        return (
-          eventBelongsToEpisode(pair.startIso, episode) ||
-          eventBelongsToEpisode(pair.endIso, episode)
-        );
-      });
-
-      if (matchingPairs.length > 0) {
-        for (const pair of matchingPairs) {
-          usedPairs.add(pair.key);
-        }
-
-        const startIso = matchingPairs
-          .map((pair) => pair.startIso)
-          .sort(
-            (a, b) =>
-              new Date(a).getTime() - new Date(b).getTime(),
-          )[0];
-
-        const endIso = matchingPairs
-          .map((pair) => pair.endIso)
-          .sort(
-            (a, b) =>
-              new Date(b).getTime() - new Date(a).getTime(),
-          )[0];
-
-        const statusSourceUrls = uniqueStrings(
-          matchingPairs.map((pair) => pair.sourceUrl),
-        );
-
-        const timeSource: TimeSource =
-          statusSourceUrls.length === 1 &&
-          statusSourceUrls[0] === rootUrl
-            ? 'ROOT_ISSUE_STATUS'
-            : 'RELATED_ISSUE_STATUS';
-
-        results.push({
-          episodeId: episode.id,
-          rootUrl,
-          startIso,
-          endIso,
-          timeSource,
-          statusSourceUrls,
-          activitySourceUrls: [],
-          relatedIssueUrls,
-          relatedPrUrls,
-          graphErrors: graph.errors,
-        });
-
-        continue;
-      }
-
-      const prEvents = graph.events
-        .filter(
-          (event) =>
-            episode.dsmDates.length === 1 &&
-            event.sourceKind === 'pull' &&
-            startsWithActor(event.text, githubUsername) &&
-            eventBelongsToEpisode(event.timestamp, episode),
-        )
-        .sort(
-          (a, b) =>
-            new Date(a.timestamp).getTime() -
-            new Date(b.timestamp).getTime(),
-        );
-
-      const uniqueActivity = Array.from(
-        new Map(
-          prEvents.map((event) => [
-            `${event.sourceUrl}|${event.timestamp}|${event.text.replace(/\s+/g, ' ')}`,
-            event,
-          ]),
-        ).values(),
-      );
-
-      if (uniqueActivity.length >= 2) {
-        results.push({
-          episodeId: episode.id,
-          rootUrl,
-          startIso: uniqueActivity[0].timestamp,
-          endIso: uniqueActivity[uniqueActivity.length - 1].timestamp,
-          timeSource: 'RELATED_PR_ACTIVITY',
-          statusSourceUrls: [],
-          activitySourceUrls: uniqueStrings(
-            uniqueActivity.map((event) => event.sourceUrl),
-          ),
-          relatedIssueUrls,
-          relatedPrUrls,
-          graphErrors: graph.errors,
-        });
-
-        continue;
-      }
-
-      if (uniqueActivity.length === 1) {
-        results.push({
-          episodeId: episode.id,
-          rootUrl,
-          startIso: uniqueActivity[0].timestamp,
-          endIso: null,
-          timeSource: 'PR_ACTIVITY_PARTIAL',
-          statusSourceUrls: [],
-          activitySourceUrls: [uniqueActivity[0].sourceUrl],
-          relatedIssueUrls,
-          relatedPrUrls,
-          graphErrors: graph.errors,
-        });
-
-        continue;
-      }
-
-      results.push({
-        episodeId: episode.id,
-        rootUrl,
-        startIso: null,
-        endIso: null,
-        timeSource: 'DSM_ONLY',
-        statusSourceUrls: [],
-        activitySourceUrls: [],
-        relatedIssueUrls,
-        relatedPrUrls,
-        graphErrors: graph.errors,
-      });
-    }
+  if (uniqueActivity.length >= 2) {
+    return {
+      rowKey: rowKey(task),
+      rootUrl,
+      date: task.date,
+      startIso: uniqueActivity[0].timestamp,
+      endIso: uniqueActivity[uniqueActivity.length - 1].timestamp,
+      timeSource: 'RELATED_ACTIVITY',
+      statusSourceUrls: [],
+      activitySourceUrls: uniqueStrings(
+        uniqueActivity.map((event) => event.sourceUrl),
+      ),
+      activityCount: uniqueActivity.length,
+      relatedIssueUrls,
+      relatedPrUrls,
+      graphErrors: graph.errors,
+    };
   }
 
-  return results;
+  if (uniqueActivity.length === 1) {
+    return {
+      rowKey: rowKey(task),
+      rootUrl,
+      date: task.date,
+      startIso: null,
+      endIso: null,
+      timeSource: 'INSUFFICIENT_ACTIVITY',
+      statusSourceUrls: [],
+      activitySourceUrls: [uniqueActivity[0].sourceUrl],
+      activityCount: 1,
+      relatedIssueUrls,
+      relatedPrUrls,
+      graphErrors: graph.errors,
+    };
+  }
+
+  return {
+    rowKey: rowKey(task),
+    rootUrl,
+    date: task.date,
+    startIso: null,
+    endIso: null,
+    timeSource: 'DSM_ONLY',
+    statusSourceUrls: [],
+    activitySourceUrls: [],
+    activityCount: 0,
+    relatedIssueUrls,
+    relatedPrUrls,
+    graphErrors: graph.errors,
+  };
 }
 
 function getParts(iso: string) {
@@ -844,7 +707,9 @@ function getParts(iso: string) {
     hour12: false,
   }).formatToParts(new Date(iso));
 
-  return Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return Object.fromEntries(
+    parts.map((part) => [part.type, part.value]),
+  );
 }
 
 function formatStartTime(iso: string | null) {
@@ -861,17 +726,22 @@ function formatEndTime(iso: string | null) {
   return `${p.day}/${p.month}/${p.year} ${p.hour}:${p.minute}:${p.second}`;
 }
 
-function calculateHours(startIso: string | null, endIso: string | null) {
+function calculateHours(
+  startIso: string | null,
+  endIso: string | null,
+) {
   if (!startIso || !endIso) return '';
 
   const hours =
-    (new Date(endIso).getTime() - new Date(startIso).getTime()) / 3_600_000;
+    (new Date(endIso).getTime() -
+      new Date(startIso).getTime()) /
+    3_600_000;
 
   return Number(hours.toFixed(10));
 }
 
-function workbookFileName(episodes: WorkEpisode[]) {
-  const firstDate = episodes[0]?.date ?? '';
+function workbookFileName(tasks: DsmTask[]) {
+  const firstDate = tasks[0]?.date ?? '';
   const [, month = '', year = ''] = firstDate.split('-');
 
   const monthNames: Record<string, string> = {
@@ -894,11 +764,11 @@ function workbookFileName(episodes: WorkEpisode[]) {
 }
 
 async function buildAndDownload(
-  episodes: WorkEpisode[],
-  results: EpisodeResult[],
+  tasks: DsmTask[],
+  results: DailyResult[],
 ) {
-  const resultByEpisode = new Map(
-    results.map((result) => [result.episodeId, result]),
+  const resultByRow = new Map(
+    results.map((result) => [result.rowKey, result]),
   );
 
   const headers = [
@@ -916,19 +786,19 @@ async function buildAndDownload(
     'Hour',
   ];
 
-  const rows = episodes.map((episode) => {
-    const result = resultByEpisode.get(episode.id);
+  const rows = tasks.map((task) => {
+    const result = resultByRow.get(rowKey(task));
 
     return [
-      episode.assignee,
-      episode.systemType,
-      episode.ticketTitle,
-      episode.rootUrl,
-      episode.ticketType,
-      episode.status,
-      episode.priority,
-      episode.date,
-      episode.week,
+      task.assignee,
+      task.systemType,
+      task.ticketTitle,
+      canonicalGithubUrl(task.ticketUrl),
+      task.ticketType,
+      task.status,
+      task.priority,
+      task.date,
+      task.week,
       formatStartTime(result?.startIso ?? null),
       formatEndTime(result?.endIso ?? null),
       calculateHours(
@@ -960,32 +830,34 @@ async function buildAndDownload(
 
   const diagnostics = [
     [
-      'Episode ID',
+      'Row Key',
       'Root Ticket',
-      'DSM Dates',
+      'Date',
       'DSM Statuses',
       'DSM Times',
       'Time Source',
       'Status Sources',
       'Activity Sources',
+      'Activity Count',
       'Related Issues',
       'Related PRs',
       'Start ISO',
       'End ISO',
       'Graph Errors',
     ],
-    ...episodes.map((episode) => {
-      const result = resultByEpisode.get(episode.id);
+    ...tasks.map((task) => {
+      const result = resultByRow.get(rowKey(task));
 
       return [
-        episode.id,
-        episode.rootUrl,
-        episode.dsmDates.join(', '),
-        episode.dsmStatuses.join(' -> '),
-        episode.dsmTimes.join(', '),
+        rowKey(task),
+        canonicalGithubUrl(task.ticketUrl),
+        task.date,
+        task.dsmStatuses.join(' -> '),
+        task.dsmTimes.join(', '),
         result?.timeSource ?? 'DSM_ONLY',
         result?.statusSourceUrls.join('\n') ?? '',
         result?.activitySourceUrls.join('\n') ?? '',
+        result?.activityCount ?? 0,
         result?.relatedIssueUrls.join('\n') ?? '',
         result?.relatedPrUrls.join('\n') ?? '',
         result?.startIso ?? '',
@@ -997,14 +869,15 @@ async function buildAndDownload(
 
   const diagnosticsSheet = XLSX.utils.aoa_to_sheet(diagnostics);
   diagnosticsSheet['!cols'] = [
-    { wch: 38 },
+    { wch: 70 },
     { wch: 58 },
-    { wch: 24 },
+    { wch: 14 },
     { wch: 34 },
     { wch: 20 },
-    { wch: 26 },
+    { wch: 28 },
     { wch: 58 },
     { wch: 58 },
+    { wch: 14 },
     { wch: 58 },
     { wch: 58 },
     { wch: 28 },
@@ -1024,8 +897,10 @@ async function buildAndDownload(
   });
 
   return chrome.downloads.download({
-    url: `data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,${base64}`,
-    filename: workbookFileName(episodes),
+    url:
+      'data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,' +
+      base64,
+    filename: workbookFileName(tasks),
     saveAs: true,
   });
 }
@@ -1036,17 +911,23 @@ async function runJob(
 ) {
   inMemoryRunning = true;
 
-  const episodes = buildWorkEpisodes(tasks);
+  const canonicalTasks = tasks.map((task) => ({
+    ...task,
+    ticketUrl: canonicalGithubUrl(task.ticketUrl),
+  }));
+
   const rootUrls = uniqueStrings(
-    episodes.map((episode) => episode.rootUrl),
+    canonicalTasks.map((task) => task.ticketUrl),
   );
+
   const graphs = new Map<string, WorkGraph>();
 
   await setState({
     running: true,
     current: 0,
     total: rootUrls.length,
-    message: `Membangun work graph untuk ${rootUrls.length} root issue...`,
+    message:
+      `Membangun work graph untuk ${rootUrls.length} root issue...`,
   });
 
   try {
@@ -1058,7 +939,8 @@ async function runJob(
         current: index,
         total: rootUrls.length,
         currentUrl: rootUrl,
-        message: `Crawl graph ${index + 1}/${rootUrls.length}`,
+        message:
+          `Crawl graph ${index + 1}/${rootUrls.length}`,
       });
 
       const graph = await crawlWorkGraph(rootUrl);
@@ -1069,17 +951,32 @@ async function runJob(
         current: index + 1,
         total: rootUrls.length,
         currentUrl: rootUrl,
-        message: `Selesai graph ${index + 1}/${rootUrls.length}`,
+        message:
+          `Selesai graph ${index + 1}/${rootUrls.length}`,
       });
     }
 
-    const results = resolveEpisodeResults(
-      episodes,
-      graphs,
-      githubUsername,
-    );
+    const results = canonicalTasks.map((task) => {
+      const graph =
+        graphs.get(task.ticketUrl) ??
+        ({
+          rootUrl: task.ticketUrl,
+          nodes: [],
+          events: [],
+          errors: ['Work graph tidak tersedia.'],
+        } satisfies WorkGraph);
 
-    const downloadId = await buildAndDownload(episodes, results);
+      return resolveDailyTask(
+        task,
+        graph,
+        githubUsername,
+      );
+    });
+
+    const downloadId = await buildAndDownload(
+      canonicalTasks,
+      results,
+    );
 
     const completeCount = results.filter(
       (result) => result.startIso && result.endIso,
@@ -1090,7 +987,7 @@ async function runJob(
       current: rootUrls.length,
       total: rootUrls.length,
       message:
-        `Selesai. ${episodes.length} work episode dibuat; ` +
+        `Selesai. ${canonicalTasks.length} row KPI dibuat; ` +
         `${completeCount} punya Start & End lengkap.`,
       finishedAt: new Date().toISOString(),
       downloadId,
@@ -1114,7 +1011,9 @@ async function runJob(
 chrome.runtime.onMessage.addListener(
   (message, _sender, sendResponse) => {
     if (message?.type === 'GET_JOB_STATE') {
-      void getState().then((state) => sendResponse({ state }));
+      void getState().then((state) =>
+        sendResponse({ state }),
+      );
       return true;
     }
 
