@@ -12,6 +12,9 @@ import type {
 const STATE_KEY = 'gitubGenJobState';
 const MAX_GRAPH_DEPTH = 2;
 const MAX_GRAPH_NODES = 24;
+const ACTIVITY_CLUSTER_GAP_MINUTES = 90;
+const ACTIVITY_CLUSTER_GAP_MS =
+  ACTIVITY_CLUSTER_GAP_MINUTES * 60 * 1000;
 
 type RelationKind = 'sub_issue' | 'parent_issue' | 'linked_pr';
 
@@ -43,6 +46,15 @@ type StatusPair = {
   sourceUrl: string;
   startIso: string;
   endIso: string;
+};
+
+type WorkSegment = {
+  kind: 'status' | 'activity';
+  startIso: string;
+  endIso: string;
+  statusSourceUrls: string[];
+  activitySourceUrls: string[];
+  eventCount: number;
 };
 
 chrome.action.onClicked.addListener(async () => {
@@ -484,12 +496,38 @@ function eventDateWib(iso: string) {
   return `${value.year}-${value.month}-${value.day}`;
 }
 
+function eventMinutesWib(iso: string) {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Jakarta',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(new Date(iso));
+
+  const value = Object.fromEntries(
+    parts.map((part) => [part.type, part.value]),
+  );
+
+  return Number(value.hour) * 60 + Number(value.minute);
+}
+
+function sessionMinutes(sessionTime: string) {
+  const match = sessionTime.match(/^(\d{1,2}):(\d{2})$/);
+
+  if (!match) return null;
+
+  return Number(match[1]) * 60 + Number(match[2]);
+}
+
 function uniqueStrings(values: string[]) {
   return [...new Set(values.filter(Boolean))];
 }
 
 function rowKey(task: DsmTask) {
-  return `${canonicalGithubUrl(task.ticketUrl)}|${task.date}`;
+  return (
+    `${canonicalGithubUrl(task.ticketUrl)}|${task.date}|` +
+    `${task.sessionTime || 'NO_TIME'}`
+  );
 }
 
 function startsWithActor(text: string, username: string) {
@@ -498,7 +536,7 @@ function startsWithActor(text: string, username: string) {
 }
 
 function isNoiseActivity(text: string) {
-  return /(?:moved this from|assigned|mentioned this|subscribed|unsubscribed|added this to|removed this from)/i.test(
+  return /(?:assigned|mentioned this|subscribed|unsubscribed|added this to|removed this from|requested a review|review request removed)/i.test(
     text,
   );
 }
@@ -550,16 +588,237 @@ function buildStatusPairs(graph: WorkGraph): StatusPair[] {
     }
   }
 
-  return pairs;
+  return pairs.sort(
+    (a, b) =>
+      new Date(a.startIso).getTime() -
+      new Date(b.startIso).getTime(),
+  );
 }
 
-function resolveDailyTask(
+function mergeOverlappingStatusPairs(
+  pairs: StatusPair[],
+): WorkSegment[] {
+  const segments: WorkSegment[] = [];
+
+  for (const pair of pairs) {
+    const last = segments[segments.length - 1];
+    const startMs = new Date(pair.startIso).getTime();
+    const endMs = new Date(pair.endIso).getTime();
+
+    if (
+      last &&
+      startMs <= new Date(last.endIso).getTime()
+    ) {
+      if (endMs > new Date(last.endIso).getTime()) {
+        last.endIso = pair.endIso;
+      }
+
+      last.statusSourceUrls = uniqueStrings([
+        ...last.statusSourceUrls,
+        pair.sourceUrl,
+      ]);
+      last.eventCount += 2;
+      continue;
+    }
+
+    segments.push({
+      kind: 'status',
+      startIso: pair.startIso,
+      endIso: pair.endIso,
+      statusSourceUrls: [pair.sourceUrl],
+      activitySourceUrls: [],
+      eventCount: 2,
+    });
+  }
+
+  return segments;
+}
+
+function clusterActivityEvents(
+  events: GraphEvent[],
+): WorkSegment[] {
+  const ordered = [...events].sort(
+    (a, b) =>
+      new Date(a.timestamp).getTime() -
+      new Date(b.timestamp).getTime(),
+  );
+
+  const clusters: GraphEvent[][] = [];
+
+  for (const event of ordered) {
+    const lastCluster = clusters[clusters.length - 1];
+
+    if (!lastCluster) {
+      clusters.push([event]);
+      continue;
+    }
+
+    const previous = lastCluster[lastCluster.length - 1];
+    const gap =
+      new Date(event.timestamp).getTime() -
+      new Date(previous.timestamp).getTime();
+
+    if (gap <= ACTIVITY_CLUSTER_GAP_MS) {
+      lastCluster.push(event);
+    } else {
+      clusters.push([event]);
+    }
+  }
+
+  return clusters.map((cluster) => ({
+    kind: 'activity' as const,
+    startIso: cluster[0].timestamp,
+    endIso: cluster[cluster.length - 1].timestamp,
+    statusSourceUrls: [],
+    activitySourceUrls: uniqueStrings(
+      cluster.map((event) => event.sourceUrl),
+    ),
+    eventCount: cluster.length,
+  }));
+}
+
+function intervalsOverlap(a: WorkSegment, b: WorkSegment) {
+  return (
+    new Date(a.startIso).getTime() <=
+      new Date(b.endIso).getTime() &&
+    new Date(b.startIso).getTime() <=
+      new Date(a.endIso).getTime()
+  );
+}
+
+function buildWorkSegmentsForDate(
+  graph: WorkGraph,
+  targetDate: string,
+  githubUsername: string,
+) {
+  const statusPairs = buildStatusPairs(graph).filter(
+    (pair) =>
+      eventDateWib(pair.startIso) === targetDate &&
+      eventDateWib(pair.endIso) === targetDate,
+  );
+
+  const statusSegments =
+    mergeOverlappingStatusPairs(statusPairs);
+
+  const activityEvents = Array.from(
+    new Map(
+      graph.events
+        .filter(
+          (event) =>
+            event.sourceKind === 'pull' &&
+            eventDateWib(event.timestamp) === targetDate &&
+            startsWithActor(event.text, githubUsername) &&
+            !isNoiseActivity(event.text),
+        )
+        .map((event) => [
+          `${event.sourceUrl}|${event.timestamp}|${event.text.replace(/\s+/g, ' ')}`,
+          event,
+        ]),
+    ).values(),
+  );
+
+  const activitySegments =
+    clusterActivityEvents(activityEvents);
+
+  const standaloneActivity: WorkSegment[] = [];
+
+  for (const activitySegment of activitySegments) {
+    const overlappingStatus = statusSegments.find((statusSegment) =>
+      intervalsOverlap(statusSegment, activitySegment),
+    );
+
+    if (overlappingStatus) {
+      overlappingStatus.activitySourceUrls = uniqueStrings([
+        ...overlappingStatus.activitySourceUrls,
+        ...activitySegment.activitySourceUrls,
+      ]);
+      overlappingStatus.eventCount +=
+        activitySegment.eventCount;
+      continue;
+    }
+
+    standaloneActivity.push(activitySegment);
+  }
+
+  return [...statusSegments, ...standaloneActivity].sort(
+    (a, b) =>
+      new Date(a.startIso).getTime() -
+      new Date(b.startIso).getTime(),
+  );
+}
+
+function segmentAnchorMinutes(segment: WorkSegment) {
+  const start = eventMinutesWib(segment.startIso);
+  const end = eventMinutesWib(segment.endIso);
+  return (start + end) / 2;
+}
+
+function assignSegmentsToTasks(
+  tasks: DsmTask[],
+  segments: WorkSegment[],
+) {
+  const assignments = new Map<string, number>();
+  const usedTasks = new Set<number>();
+  const usedSegments = new Set<number>();
+
+  const candidates: Array<{
+    taskIndex: number;
+    segmentIndex: number;
+    score: number;
+  }> = [];
+
+  tasks.forEach((task, taskIndex) => {
+    const anchor = sessionMinutes(task.sessionTime);
+
+    segments.forEach((segment, segmentIndex) => {
+      const segmentAnchor = segmentAnchorMinutes(segment);
+
+      const distance =
+        anchor === null
+          ? segmentIndex * 60
+          : Math.abs(segmentAnchor - anchor);
+
+      // Status pair adalah bukti lebih kuat, jadi beri bonus kecil.
+      const score =
+        distance - (segment.kind === 'status' ? 30 : 0);
+
+      candidates.push({
+        taskIndex,
+        segmentIndex,
+        score,
+      });
+    });
+  });
+
+  candidates.sort((a, b) => a.score - b.score);
+
+  for (const candidate of candidates) {
+    if (
+      usedTasks.has(candidate.taskIndex) ||
+      usedSegments.has(candidate.segmentIndex)
+    ) {
+      continue;
+    }
+
+    assignments.set(
+      rowKey(tasks[candidate.taskIndex]),
+      candidate.segmentIndex,
+    );
+
+    usedTasks.add(candidate.taskIndex);
+    usedSegments.add(candidate.segmentIndex);
+  }
+
+  return assignments;
+}
+
+function resultFromSegment(
   task: DsmTask,
   graph: WorkGraph,
-  githubUsername: string,
+  segment: WorkSegment | undefined,
+  clusterIndex: number | null,
 ): DailyResult {
   const rootUrl = canonicalGithubUrl(task.ticketUrl);
-  const targetDate = dsmDateToYmd(task.date);
 
   const relatedIssueUrls = uniqueStrings(
     graph.nodes
@@ -573,126 +832,141 @@ function resolveDailyTask(
       .map((node) => node.url),
   );
 
-  const matchingPairs = buildStatusPairs(graph).filter(
-    (pair) =>
-      eventDateWib(pair.startIso) === targetDate &&
-      eventDateWib(pair.endIso) === targetDate,
-  );
+  if (!segment) {
+    return {
+      rowKey: rowKey(task),
+      rootUrl,
+      date: task.date,
+      sessionTime: task.sessionTime,
+      startIso: null,
+      endIso: null,
+      timeSource: 'DSM_ONLY',
+      statusSourceUrls: [],
+      activitySourceUrls: [],
+      activityCount: 0,
+      clusterIndex: null,
+      clusterStartIso: null,
+      clusterEndIso: null,
+      relatedIssueUrls,
+      relatedPrUrls,
+      graphErrors: graph.errors,
+    };
+  }
 
-  if (matchingPairs.length > 0) {
-    const startIso = matchingPairs
-      .map((pair) => pair.startIso)
-      .sort(
-        (a, b) =>
-          new Date(a).getTime() - new Date(b).getTime(),
-      )[0];
+  let timeSource: TimeSource;
+  let startIso: string | null = null;
+  let endIso: string | null = null;
 
-    const endIso = matchingPairs
-      .map((pair) => pair.endIso)
-      .sort(
-        (a, b) =>
-          new Date(b).getTime() - new Date(a).getTime(),
-      )[0];
-
-    const statusSourceUrls = uniqueStrings(
-      matchingPairs.map((pair) => pair.sourceUrl),
-    );
-
-    const timeSource: TimeSource =
-      statusSourceUrls.length === 1 &&
-      statusSourceUrls[0] === rootUrl
+  if (segment.kind === 'status') {
+    timeSource =
+      segment.statusSourceUrls.length === 1 &&
+      segment.statusSourceUrls[0] === rootUrl
         ? 'ROOT_ISSUE_STATUS'
         : 'RELATED_ISSUE_STATUS';
 
-    return {
-      rowKey: rowKey(task),
-      rootUrl,
-      date: task.date,
-      startIso,
-      endIso,
-      timeSource,
-      statusSourceUrls,
-      activitySourceUrls: [],
-      activityCount: 0,
-      relatedIssueUrls,
-      relatedPrUrls,
-      graphErrors: graph.errors,
-    };
-  }
-
-  const activity = graph.events
-    .filter(
-      (event) =>
-        event.sourceKind === 'pull' &&
-        eventDateWib(event.timestamp) === targetDate &&
-        startsWithActor(event.text, githubUsername) &&
-        !isNoiseActivity(event.text),
-    )
-    .sort(
-      (a, b) =>
-        new Date(a.timestamp).getTime() -
-        new Date(b.timestamp).getTime(),
-    );
-
-  const uniqueActivity = Array.from(
-    new Map(
-      activity.map((event) => [
-        `${event.sourceUrl}|${event.timestamp}|${event.text.replace(/\s+/g, ' ')}`,
-        event,
-      ]),
-    ).values(),
-  );
-
-  if (uniqueActivity.length >= 2) {
-    return {
-      rowKey: rowKey(task),
-      rootUrl,
-      date: task.date,
-      startIso: uniqueActivity[0].timestamp,
-      endIso: uniqueActivity[uniqueActivity.length - 1].timestamp,
-      timeSource: 'RELATED_ACTIVITY',
-      statusSourceUrls: [],
-      activitySourceUrls: uniqueStrings(
-        uniqueActivity.map((event) => event.sourceUrl),
-      ),
-      activityCount: uniqueActivity.length,
-      relatedIssueUrls,
-      relatedPrUrls,
-      graphErrors: graph.errors,
-    };
-  }
-
-  if (uniqueActivity.length === 1) {
-    return {
-      rowKey: rowKey(task),
-      rootUrl,
-      date: task.date,
-      startIso: null,
-      endIso: null,
-      timeSource: 'INSUFFICIENT_ACTIVITY',
-      statusSourceUrls: [],
-      activitySourceUrls: [uniqueActivity[0].sourceUrl],
-      activityCount: 1,
-      relatedIssueUrls,
-      relatedPrUrls,
-      graphErrors: graph.errors,
-    };
+    startIso = segment.startIso;
+    endIso = segment.endIso;
+  } else if (segment.eventCount >= 2) {
+    timeSource = 'RELATED_ACTIVITY';
+    startIso = segment.startIso;
+    endIso = segment.endIso;
+  } else {
+    timeSource = 'INSUFFICIENT_ACTIVITY';
   }
 
   return {
     rowKey: rowKey(task),
     rootUrl,
     date: task.date,
-    startIso: null,
-    endIso: null,
-    timeSource: 'DSM_ONLY',
-    statusSourceUrls: [],
-    activitySourceUrls: [],
-    activityCount: 0,
+    sessionTime: task.sessionTime,
+    startIso,
+    endIso,
+    timeSource,
+    statusSourceUrls: segment.statusSourceUrls,
+    activitySourceUrls: segment.activitySourceUrls,
+    activityCount: segment.eventCount,
+    clusterIndex,
+    clusterStartIso: segment.startIso,
+    clusterEndIso: segment.endIso,
     relatedIssueUrls,
     relatedPrUrls,
     graphErrors: graph.errors,
   };
+}
+
+function resolveRows(
+  tasks: DsmTask[],
+  graphs: Map<string, WorkGraph>,
+  githubUsername: string,
+) {
+  const grouped = new Map<string, DsmTask[]>();
+
+  for (const task of tasks) {
+    const key =
+      `${canonicalGithubUrl(task.ticketUrl)}|${task.date}`;
+    const current = grouped.get(key) ?? [];
+    current.push(task);
+    grouped.set(key, current);
+  }
+
+  const results: DailyResult[] = [];
+
+  for (const group of grouped.values()) {
+    const orderedTasks = [...group].sort((a, b) => {
+      const aMinutes = sessionMinutes(a.sessionTime);
+      const bMinutes = sessionMinutes(b.sessionTime);
+
+      if (aMinutes === null && bMinutes === null) return 0;
+      if (aMinutes === null) return 1;
+      if (bMinutes === null) return -1;
+      return aMinutes - bMinutes;
+    });
+
+    const rootUrl =
+      canonicalGithubUrl(orderedTasks[0].ticketUrl);
+
+    const graph =
+      graphs.get(rootUrl) ??
+      ({
+        rootUrl,
+        nodes: [],
+        events: [],
+        errors: ['Work graph tidak tersedia.'],
+      } satisfies WorkGraph);
+
+    const targetDate = dsmDateToYmd(orderedTasks[0].date);
+
+    const segments = buildWorkSegmentsForDate(
+      graph,
+      targetDate,
+      githubUsername,
+    );
+
+    const assignments = assignSegmentsToTasks(
+      orderedTasks,
+      segments,
+    );
+
+    for (const task of orderedTasks) {
+      const segmentIndex =
+        assignments.get(rowKey(task)) ?? null;
+
+      results.push(
+        resultFromSegment(
+          task,
+          graph,
+          segmentIndex === null
+            ? undefined
+            : segments[segmentIndex],
+          segmentIndex === null
+            ? null
+            : segmentIndex + 1,
+        ),
+      );
+    }
+  }
+
+  return results;
 }
 
 function getParts(iso: string) {
@@ -833,9 +1107,12 @@ async function buildAndDownload(
       'Row Key',
       'Root Ticket',
       'Date',
+      'DSM Session',
       'DSM Statuses',
-      'DSM Times',
       'Time Source',
+      'Cluster #',
+      'Cluster Start ISO',
+      'Cluster End ISO',
       'Status Sources',
       'Activity Sources',
       'Activity Count',
@@ -852,9 +1129,12 @@ async function buildAndDownload(
         rowKey(task),
         canonicalGithubUrl(task.ticketUrl),
         task.date,
+        task.sessionTime,
         task.dsmStatuses.join(' -> '),
-        task.dsmTimes.join(', '),
         result?.timeSource ?? 'DSM_ONLY',
+        result?.clusterIndex ?? '',
+        result?.clusterStartIso ?? '',
+        result?.clusterEndIso ?? '',
         result?.statusSourceUrls.join('\n') ?? '',
         result?.activitySourceUrls.join('\n') ?? '',
         result?.activityCount ?? 0,
@@ -867,13 +1147,18 @@ async function buildAndDownload(
     }),
   ];
 
-  const diagnosticsSheet = XLSX.utils.aoa_to_sheet(diagnostics);
+  const diagnosticsSheet =
+    XLSX.utils.aoa_to_sheet(diagnostics);
+
   diagnosticsSheet['!cols'] = [
-    { wch: 70 },
+    { wch: 78 },
     { wch: 58 },
     { wch: 14 },
+    { wch: 14 },
     { wch: 34 },
-    { wch: 20 },
+    { wch: 28 },
+    { wch: 12 },
+    { wch: 28 },
     { wch: 28 },
     { wch: 58 },
     { wch: 58 },
@@ -956,22 +1241,11 @@ async function runJob(
       });
     }
 
-    const results = canonicalTasks.map((task) => {
-      const graph =
-        graphs.get(task.ticketUrl) ??
-        ({
-          rootUrl: task.ticketUrl,
-          nodes: [],
-          events: [],
-          errors: ['Work graph tidak tersedia.'],
-        } satisfies WorkGraph);
-
-      return resolveDailyTask(
-        task,
-        graph,
-        githubUsername,
-      );
-    });
+    const results = resolveRows(
+      canonicalTasks,
+      graphs,
+      githubUsername,
+    );
 
     const downloadId = await buildAndDownload(
       canonicalTasks,
