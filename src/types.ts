@@ -13,6 +13,17 @@ export type DsmTask = {
   dsmTimes: string[];
 };
 
+export type ProjectRecapRow = {
+  assignee: string;
+  systemType: string;
+  ticketTitle: string;
+  ticketUrl: string;
+  status: string;
+  priority: string;
+  date: string;
+  week: string;
+};
+
 export type GraphNodeKind = 'issue' | 'pull';
 
 export type GraphNode = {
