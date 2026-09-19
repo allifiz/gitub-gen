@@ -172,6 +172,7 @@ export function parseDsmText(rawText: string, wantedAssignee: string): DsmTask[]
       priority: '',
       date: currentTask.date,
       week: getWeek(currentTask.date, firstDsmDate),
+      sessionTime: currentTask.meetingTime,
       dsmStatuses: currentTask.status.trim()
         ? [currentTask.status.trim()]
         : [],
@@ -249,12 +250,14 @@ export function parseDsmText(rawText: string, wantedAssignee: string): DsmTask[]
 
   flushTask();
 
-  // Satu URL boleh muncul berkali-kali dalam sebulan.
-  // Yang digabung hanya URL + tanggal yang sama, mis. DSM 11.00 dan 16.00.
+  // Satu URL boleh muncul lebih dari sekali pada tanggal yang sama.
+  // DSM 11.00 dan 16.00 adalah dua sesi KPI yang berbeda.
+  // Yang digabung hanya URL + tanggal + sesi yang sama.
   const daily = new Map<string, DsmTask>();
 
   for (const task of occurrences) {
-    const key = `${task.ticketUrl}|${task.date}`;
+    const key =
+      `${task.ticketUrl}|${task.date}|${task.sessionTime || 'NO_TIME'}`;
     const existing = daily.get(key);
 
     if (!existing) {
@@ -288,6 +291,12 @@ export function parseDsmText(rawText: string, wantedAssignee: string): DsmTask[]
     );
 
     if (dateCompare !== 0) return dateCompare;
+
+    const timeCompare = (a.sessionTime || '').localeCompare(
+      b.sessionTime || '',
+    );
+
+    if (timeCompare !== 0) return timeCompare;
     return a.ticketUrl.localeCompare(b.ticketUrl);
   });
 }
