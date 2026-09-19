@@ -1037,6 +1037,126 @@ function workbookFileName(tasks: DsmTask[]) {
   return `KPI-${monthName}-${year || 'Export'}.xlsx`;
 }
 
+function compareTasksChronologically(a: DsmTask, b: DsmTask) {
+  const dateCompare = dsmDateToYmd(a.date).localeCompare(
+    dsmDateToYmd(b.date),
+  );
+
+  if (dateCompare !== 0) return dateCompare;
+
+  const aMinutes = sessionMinutes(a.sessionTime);
+  const bMinutes = sessionMinutes(b.sessionTime);
+
+  if (aMinutes === null && bMinutes === null) return 0;
+  if (aMinutes === null) return 1;
+  if (bMinutes === null) return -1;
+
+  return aMinutes - bMinutes;
+}
+
+function buildUniqueTicketRows(
+  tasks: DsmTask[],
+  resultByRow: Map<string, DailyResult>,
+) {
+  const grouped = new Map<string, DsmTask[]>();
+
+  for (const task of tasks) {
+    const url = canonicalGithubUrl(task.ticketUrl);
+    const current = grouped.get(url) ?? [];
+    current.push(task);
+    grouped.set(url, current);
+  }
+
+  return [...grouped.entries()]
+    .map(([ticketUrl, group]) => {
+      const ordered = [...group].sort(compareTasksChronologically);
+      const first = ordered[0];
+      const last = ordered[ordered.length - 1];
+
+      const bestTitle = ordered.reduce((best, task) =>
+        task.ticketTitle.length > best.ticketTitle.length
+          ? task
+          : best,
+      ).ticketTitle;
+
+      const lastStatus =
+        [...ordered]
+          .reverse()
+          .find((task) => task.status.trim())?.status ?? '';
+
+      const systemType =
+        ordered.find((task) => task.systemType.trim())?.systemType ?? '';
+
+      const ticketType =
+        ordered.find((task) => task.ticketType.trim())?.ticketType ?? '';
+
+      const priority =
+        [...ordered]
+          .reverse()
+          .find((task) => task.priority.trim())?.priority ?? '';
+
+      const rowResults = ordered
+        .map((task) => resultByRow.get(rowKey(task)))
+        .filter((result): result is DailyResult => Boolean(result));
+
+      const starts = rowResults
+        .map((result) => result.startIso)
+        .filter((value): value is string => Boolean(value))
+        .sort(
+          (a, b) =>
+            new Date(a).getTime() - new Date(b).getTime(),
+        );
+
+      const ends = rowResults
+        .map((result) => result.endIso)
+        .filter((value): value is string => Boolean(value))
+        .sort(
+          (a, b) =>
+            new Date(a).getTime() - new Date(b).getTime(),
+        );
+
+      let totalHour = 0;
+      let completeRows = 0;
+
+      for (const result of rowResults) {
+        const hour = calculateHours(
+          result.startIso,
+          result.endIso,
+        );
+
+        if (typeof hour === 'number') {
+          totalHour += hour;
+          completeRows += 1;
+        }
+      }
+
+      return {
+        sortTask: first,
+        row: [
+          first.assignee,
+          systemType,
+          bestTitle,
+          ticketUrl,
+          ticketType,
+          lastStatus,
+          priority,
+          first.date,
+          first.week,
+          formatStartTime(starts[0] ?? null),
+          formatEndTime(ends[ends.length - 1] ?? null),
+          completeRows > 0
+            ? Number(totalHour.toFixed(10))
+            : '',
+          ordered.length,
+        ],
+      };
+    })
+    .sort((a, b) =>
+      compareTasksChronologically(a.sortTask, b.sortTask),
+    )
+    .map((item) => item.row);
+}
+
 async function buildAndDownload(
   tasks: DsmTask[],
   results: DailyResult[],
@@ -1101,6 +1221,54 @@ async function buildAndDownload(
   ];
 
   XLSX.utils.book_append_sheet(workbook, kpiSheet, 'KPI');
+
+  const uniqueHeaders = [
+    'Assignee',
+    'Type',
+    'Ticket Title',
+    'Ticket URL',
+    'Type',
+    'Status',
+    'Priority',
+    'Date',
+    'Week',
+    'First Start Time',
+    'Last End Time',
+    'Total Hour',
+    'Occurrence Count',
+  ];
+
+  const uniqueRows = buildUniqueTicketRows(
+    tasks,
+    resultByRow,
+  );
+
+  const uniqueSheet = XLSX.utils.aoa_to_sheet([
+    uniqueHeaders,
+    ...uniqueRows,
+  ]);
+
+  uniqueSheet['!cols'] = [
+    { wch: 12 },
+    { wch: 14 },
+    { wch: 58 },
+    { wch: 58 },
+    { wch: 14 },
+    { wch: 20 },
+    { wch: 12 },
+    { wch: 13 },
+    { wch: 12 },
+    { wch: 22 },
+    { wch: 22 },
+    { wch: 14 },
+    { wch: 18 },
+  ];
+
+  XLSX.utils.book_append_sheet(
+    workbook,
+    uniqueSheet,
+    'Rekap Tiket Unik',
+  );
 
   const diagnostics = [
     [
