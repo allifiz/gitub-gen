@@ -4,42 +4,81 @@ Generator KPI dari **DSM DOCX + GitHub timeline** tanpa OAuth, PAT, GitHub CLI, 
 
 Extension berjalan di Chrome yang **sudah login GitHub kantor**.
 
-## Model yang dipakai
+## Model final
 
-Aturan utama sekarang sengaja dibuat sederhana:
+Aturan utama:
 
-> **1 row KPI = 1 Ticket URL + 1 tanggal pengerjaan di DSM**
+> **1 row KPI = 1 Ticket URL + 1 tanggal + 1 sesi DSM**
 
-DSM menentukan row apa saja yang harus masuk ke KPI.
+Artinya ticket yang sama boleh menghasilkan dua row di hari yang sama kalau muncul di DSM 11.00 dan DSM 16.00.
 
-GitHub hanya dipakai untuk mencoba mengisi:
+Contoh:
+
+```text
+#123 | 19-09-2026 | DSM 11.00
+#123 | 19-09-2026 | DSM 16.00
+```
+
+DSM menentukan bahwa pekerjaan memang terjadi.
+
+GitHub hanya dipakai untuk mencari bukti waktu:
 
 - Start Time
 - End Time
 - Hour
 
-Jadi Gitub Gen tidak lagi mencoba menebak episode kerja lintas hari.
+Jam DSM **bukan cutoff keras**. Pekerjaan sesi 11 boleh selesai lewat 11, dan pekerjaan sesi 16 boleh lanjut lewat 16.
 
-Jika ticket yang sama muncul lagi di tanggal berbeda, row baru tetap dibuat.
+## Kenapa pakai activity cluster?
 
-Contoh:
+Contoh aktivitas satu ticket pada hari yang sama:
 
 ```text
-21 Aug  #3697
-24 Aug  #3697
+09:08
+09:45
+10:30
+11:18
+
+13:12
+14:20
+15:50
+17:06
 ```
 
-menjadi dua row KPI.
+Gitub Gen memecah activity berdasarkan jeda tidak aktif.
 
-Jika ticket yang sama muncul pada DSM 11.00 dan 16.00 di tanggal yang sama, parser menggabungkannya menjadi satu row harian dan menyimpan semua status/jam DSM untuk Diagnostics.
+Default sekarang:
 
-## Penentuan Start Time dan End Time
+```text
+inactivity gap >= 90 menit
+=> cluster baru
+```
 
-Urutannya hanya tiga langkah.
+Hasil:
 
-### 1. Status pair pada tanggal DSM
+```text
+Cluster 1: 09:08 -> 11:18
+Cluster 2: 13:12 -> 17:06
+```
 
-Gitub Gen mencari pasangan:
+Kemudian cluster dipasangkan ke sesi DSM berdasarkan kedekatan waktunya.
+
+Jadi:
+
+```text
+DSM 11 -> Cluster 1
+DSM 16 -> Cluster 2
+```
+
+bukan berdasarkan potongan kaku 09-11 atau 13-16.
+
+Kalau hanya ada satu cluster dan ticket muncul di dua sesi, cluster diberikan ke sesi DSM yang paling dekat. Sesi lain tetap masuk Excel tetapi waktunya kosong.
+
+## Prioritas waktu
+
+### 1. Status pair
+
+Kalau work graph punya:
 
 ```text
 to In Progress
@@ -47,93 +86,74 @@ to In Progress
 to Ready to Review
 ```
 
-dalam work graph ticket.
-
-Work graph tetap boleh berisi:
-
-- root issue dari DSM
-- sub-issue
-- parent issue jika root ternyata sub-ticket
-- linked pull request dari issue terkait
-
-Status pair hanya dipakai jika **Start dan End sama-sama terjadi pada tanggal DSM row tersebut**.
-
-Jika beberapa related issue punya status pair pada tanggal yang sama:
-
-- Start = In Progress paling awal
-- End = Ready to Review paling akhir
+dan pasangan itu terjadi pada hari DSM, pasangan status dianggap bukti paling kuat.
 
 Time Source:
 
 - `ROOT_ISSUE_STATUS`
 - `RELATED_ISSUE_STATUS`
 
-### 2. Related activity pada tanggal DSM
+Jika PR activity juga terjadi di rentang status tersebut, PR activity dianggap bagian cluster yang sama tetapi Start/End tetap memakai status pair exact.
 
-Kalau tidak ada status pair yang valid, Gitub Gen mencari aktivitas milik GitHub username yang diisi di UI pada **linked PR di work graph** dan hanya pada tanggal DSM tersebut.
+### 2. Related activity
+
+Kalau status ticket sudah Staging/Ready to Review dan PIC tidak mengubahnya kembali ke In Progress, DSM tetap membuktikan pekerjaan baru terjadi.
+
+Gitub Gen mencari activity milik GitHub username yang diisi di UI pada linked PR dari:
+
+- root issue
+- sub-issue
+- parent issue yang relevan
+- PR gateway
+- PR DB
 
 Contoh:
 
 ```text
-Root issue
-├── PR gateway
-└── Sub-issue DB
-    └── PR DB
+13:12 PR DB activity
+14:03 PR gateway activity
+15:44 PR activity
+17:06 PR activity
 ```
 
-Kalau hanya PR DB yang aktif hari itu, PR DB dipakai.
-
-Kalau PR gateway dan PR DB sama-sama aktif, activity pool menggabungkan keduanya.
-
-Jika ada minimal 2 timestamp:
+Jika masih satu cluster:
 
 ```text
-09:43 activity
-10:12 activity
-11:07 activity
+Start = 13:12
+End   = 17:06
+Time Source = RELATED_ACTIVITY
 ```
 
-maka:
+Walaupun DSM-nya jam 16.00 dan status issue tetap Staging.
 
-```text
-Start = 09:43
-End   = 11:07
-```
+### 3. Bukti kurang
 
-Time Source:
-
-```text
-RELATED_ACTIVITY
-```
-
-### 3. Bukti waktu tidak cukup
-
-Kalau hanya ada satu related activity:
+Kalau cluster hanya punya satu activity:
 
 ```text
 INSUFFICIENT_ACTIVITY
 ```
 
-Kalau tidak ada:
+Kalau tidak ada activity yang cocok:
 
 ```text
 DSM_ONLY
 ```
 
-Untuk dua kondisi tersebut:
+Pada dua kondisi itu:
 
 - row KPI tetap dibuat
 - Start Time kosong
 - End Time kosong
 - Hour kosong
 
-Gitub Gen tidak menggunakan jam standup sebagai jam kerja dan tidak mengarang durasi.
+Gitub Gen tidak menggunakan jam standup sebagai jam mulai/selesai dan tidak mengarang durasi.
 
-## Kenapa tetap ada work graph?
+## Work graph
 
-URL di DSM hanya dianggap sebagai **root / entry point**.
+URL dari DSM dianggap root / entry point.
 
-Pekerjaan sebenarnya bisa terjadi:
+Contoh:
 
 ```text
 ROOT ISSUE
@@ -142,17 +162,59 @@ ROOT ISSUE
     └── PR DB
 ```
 
-atau kebalikannya.
+atau:
 
-Jadi crawler tetap mencari related issue dan PR agar perubahan yang hanya terjadi di DB atau hanya di gateway tetap bisa ditemukan.
+```text
+ROOT ISSUE DB
+├── PR DB
+└── SUB-ISSUE gateway
+    └── PR gateway
+```
 
-Namun graph hanya membantu **mencari bukti pada tanggal DSM**. Graph tidak lagi dipakai untuk menyusun episode kerja lintas hari.
+Jadi kalau perubahan hanya terjadi di sub-ticket DB atau hanya di gateway, activity masih bisa ditemukan.
 
-Safeguard:
+Safeguard crawler:
 
 - max depth: 2
 - max graph nodes: 24
 - saat naik ke parent issue, sibling sub-issue tidak ikut disapu
+
+## Parser DSM
+
+Parser mempertahankan sesi DSM.
+
+Key internal sekarang:
+
+```text
+Ticket URL + Date + DSM Session
+```
+
+Jadi:
+
+```text
+#123 | 19-09-2026 | 11:00
+#123 | 19-09-2026 | 16:00
+```
+
+adalah dua row berbeda.
+
+Kalau ticket yang sama muncul dua kali di **sesi yang sama**, barulah digabung.
+
+Parser juga mendukung variasi format lama dan baru:
+
+```text
+Task 1 | [SUPERAPPS-SMBA] FEAT: ...
+GitHub : https://github.com/.../issues/123
+```
+
+```text
+[SUPERAPPS-SMBA] FEAT: ...
+GitHub : https://github.com/.../issues/123
+```
+
+dan URL issue polos tanpa prefix `GitHub :`.
+
+Kolom `Week` dihitung per blok 7 hari dari tanggal DSM pertama pada dokumen.
 
 ## Install
 
@@ -177,38 +239,45 @@ Pastikan Chrome yang sama sudah bisa membuka private issue GO-Bimbel.
 
 1. klik icon **Gitub Gen**
 2. app terbuka sebagai tab permanen
-3. isi Assignee, default `Allief`
-4. isi GitHub username, default `allifgobimbel`
+3. Assignee default: `Allief`
+4. GitHub username default: `allifgobimbel`
 5. pilih DSM `.docx`
-6. preview menampilkan jumlah entri DSM harian
+6. preview menampilkan tanggal + sesi DSM + status
 7. klik **Generate KPI Excel**
 
 Gitub Gen kemudian:
 
-- parse DSM
-- membuat 1 row per Ticket + Date
+- parse DSM per sesi
 - crawl work graph tiap root issue
 - membaca exact `relative-time[datetime]`
-- mencari status pair pada tanggal row
-- jika tidak ada, mencari related PR activity pada tanggal row
+- mengumpulkan activity pada tanggal DSM
+- membentuk cluster dengan inactivity gap 90 menit
+- memasangkan cluster ke DSM 11/16 berdasarkan kedekatan waktu
+- memakai status pair bila tersedia
+- fallback ke first/last related activity
 - mengubah UTC ke WIB
 - membuat Excel
 
 ## Excel
 
-Sheet **KPI**:
+Sheet **KPI** tetap:
 
 | Assignee | Type | Ticket Title | Ticket URL | Type | Status | Priority | Date | Week | Start Time | End Time | Hour |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 
-Sheet **Diagnostics** mencatat:
+Sesi DSM tidak ditambahkan ke sheet KPI agar format lama tetap kompatibel. Jika ticket/date sama muncul dua kali, Start/End yang berbeda menunjukkan sesi masing-masing.
+
+Sheet **Diagnostics** menyimpan detail:
 
 - Row Key
 - Root Ticket
 - Date
+- DSM Session
 - DSM Statuses
-- DSM Times
 - Time Source
+- Cluster #
+- Cluster Start ISO
+- Cluster End ISO
 - Status Sources
 - Activity Sources
 - Activity Count
@@ -218,25 +287,7 @@ Sheet **Diagnostics** mencatat:
 - End ISO
 - Graph Errors
 
-Dengan ini kita bisa audit kenapa row tertentu mendapat jam atau dibiarkan kosong.
-
-## DSM format compatibility
-
-Parser mendukung variasi format DSM lama dan baru, termasuk:
-
-```text
-Task 1 | [SUPERAPPS-SMBA] FEAT: ...
-GitHub : https://github.com/.../issues/123
-```
-
-```text
-[SUPERAPPS-SMBA] FEAT: ...
-GitHub : https://github.com/.../issues/123
-```
-
-dan URL issue polos tanpa prefix `GitHub :`.
-
-Kolom `Week` dihitung per blok 7 hari dari tanggal DSM pertama pada dokumen.
+Diagnostics adalah tempat mengecek kenapa suatu row dipasangkan ke cluster tertentu.
 
 ## Development
 
