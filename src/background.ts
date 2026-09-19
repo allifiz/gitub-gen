@@ -5,6 +5,7 @@ import type {
   GraphEvent,
   GraphNode,
   JobState,
+  ProjectRecapRow,
   TimeSource,
   WorkGraph,
 } from './types';
@@ -15,6 +16,9 @@ const MAX_GRAPH_NODES = 24;
 const ACTIVITY_CLUSTER_GAP_MINUTES = 90;
 const ACTIVITY_CLUSTER_GAP_MS =
   ACTIVITY_CLUSTER_GAP_MINUTES * 60 * 1000;
+const PROJECT_ORG = 'GO-Bimbel';
+const PROJECT_NUMBER = 11;
+const PROJECT_VIEW_NUMBER = 1;
 
 type RelationKind = 'sub_issue' | 'parent_issue' | 'linked_pr';
 
@@ -55,6 +59,13 @@ type WorkSegment = {
   statusSourceUrls: string[];
   activitySourceUrls: string[];
   eventCount: number;
+};
+
+
+type ProjectViewSnapshot = {
+  rows: ProjectRecapRow[];
+  noAccess: boolean;
+  error?: string;
 };
 
 chrome.action.onClicked.addListener(async () => {
@@ -307,6 +318,477 @@ async function scrapeGithubPageInBrowser(): Promise<PageSnapshot> {
     relations: [...relationMap.values()],
     noAccess: false,
   };
+}
+
+
+function getSystemTypeFromTitle(title: string) {
+  const bracket = title.match(/^\s*\[([^\]]+)\]/)?.[1] ?? '';
+  if (!bracket) return '';
+  return bracket.split('-')[0].trim();
+}
+
+function getDsmMonthContext(tasks: DsmTask[]) {
+  const firstDate = tasks[0]?.date ?? '';
+  const [, month = '', year = ''] = firstDate.split('-');
+
+  const monthNames: Record<string, string> = {
+    '01': 'Januari',
+    '02': 'Februari',
+    '03': 'Maret',
+    '04': 'April',
+    '05': 'Mei',
+    '06': 'Juni',
+    '07': 'Juli',
+    '08': 'Agustus',
+    '09': 'September',
+    '10': 'Oktober',
+    '11': 'November',
+    '12': 'Desember',
+  };
+
+  return {
+    year,
+    month,
+    monthName: monthNames[month] ?? month,
+  };
+}
+
+function buildProjectViewUrl(
+  tasks: DsmTask[],
+  githubUsername: string,
+) {
+  const { year, monthName } = getDsmMonthContext(tasks);
+
+  if (!year || !monthName) {
+    throw new Error(
+      'Tidak bisa menentukan bulan/tahun untuk GitHub Project.',
+    );
+  }
+
+  const url = new URL(
+    `https://github.com/orgs/${PROJECT_ORG}/projects/${PROJECT_NUMBER}/views/${PROJECT_VIEW_NUMBER}`,
+  );
+
+  url.searchParams.set(
+    'filterQuery',
+    `year:${year} month:${monthName} assignee:${githubUsername}`,
+  );
+
+  return url.toString();
+}
+
+async function scrapeProjectViewInBrowser(
+  assigneeLabel: string,
+): Promise<ProjectViewSnapshot> {
+  const bodyText = document.body?.innerText ?? '';
+
+  if (
+    window.location.pathname.startsWith('/login') ||
+    /sign in to github/i.test(bodyText) ||
+    /page not found/i.test(bodyText)
+  ) {
+    return {
+      rows: [],
+      noAccess: true,
+      error:
+        'GitHub Project meminta login atau halaman tidak dapat diakses.',
+    };
+  }
+
+  const cleanText = (value: string | null | undefined) =>
+    (value ?? '')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+  const normalizeHeader = (value: string) =>
+    cleanText(value)
+      .replace(/\s+(?:sort|filter).*$/i, '')
+      .toLowerCase();
+
+  const headerByIndex = new Map<number, string>();
+  const orderedHeaders: string[] = [];
+
+  const refreshHeaders = () => {
+    const headers = Array.from(
+      document.querySelectorAll<HTMLElement>(
+        '[role="columnheader"], thead th',
+      ),
+    );
+
+    headers.forEach((header, index) => {
+      const text =
+        cleanText(header.innerText) ||
+        cleanText(header.getAttribute('aria-label'));
+
+      if (!text) return;
+
+      const ariaIndex = Number(
+        header.getAttribute('aria-colindex') || 0,
+      );
+
+      if (ariaIndex > 0) {
+        headerByIndex.set(ariaIndex, normalizeHeader(text));
+      }
+
+      if (!orderedHeaders[index]) {
+        orderedHeaders[index] = normalizeHeader(text);
+      }
+    });
+  };
+
+  const getField = (
+    fields: Record<string, string>,
+    aliases: string[],
+  ) => {
+    for (const alias of aliases) {
+      const normalizedAlias = alias.toLowerCase();
+
+      if (fields[normalizedAlias]) {
+        return fields[normalizedAlias];
+      }
+
+      const fuzzy = Object.entries(fields).find(
+        ([key, value]) =>
+          value &&
+          (key === normalizedAlias ||
+            key.includes(normalizedAlias)),
+      );
+
+      if (fuzzy) return fuzzy[1];
+    }
+
+    return '';
+  };
+
+  const normalizeDate = (raw: string) => {
+    const value = cleanText(raw);
+    if (!value) return '';
+
+    const iso = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (iso) {
+      return `${iso[3]}-${iso[2]}-${iso[1]}`;
+    }
+
+    const numeric = value.match(
+      /^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})$/,
+    );
+
+    if (numeric) {
+      return (
+        String(Number(numeric[1])).padStart(2, '0') +
+        '-' +
+        String(Number(numeric[2])).padStart(2, '0') +
+        '-' +
+        numeric[3]
+      );
+    }
+
+    const parsed = Date.parse(value);
+
+    if (!Number.isNaN(parsed)) {
+      const date = new Date(parsed);
+      const day = String(date.getUTCDate()).padStart(2, '0');
+      const month = String(date.getUTCMonth() + 1).padStart(
+        2,
+        '0',
+      );
+      const year = date.getUTCFullYear();
+
+      return `${day}-${month}-${year}`;
+    }
+
+    return value;
+  };
+
+  const normalizeWeek = (raw: string) => {
+    const value = cleanText(raw);
+    if (!value) return '';
+
+    if (/^\d+$/.test(value)) {
+      return `Minggu ${value}`;
+    }
+
+    return value;
+  };
+
+  const rows = new Map<string, ProjectRecapRow>();
+
+  const collectVisibleRows = () => {
+    refreshHeaders();
+
+    const issueLinks = Array.from(
+      document.querySelectorAll<HTMLAnchorElement>(
+        'a[href*="/issues/"]',
+      ),
+    ).filter((anchor) => {
+      try {
+        const url = new URL(anchor.href);
+        return /^\/[^/]+\/[^/]+\/issues\/\d+\/?$/.test(
+          url.pathname,
+        );
+      } catch {
+        return false;
+      }
+    });
+
+    for (const issueLink of issueLinks) {
+      const row =
+        issueLink.closest<HTMLElement>('[role="row"]') ||
+        issueLink.closest<HTMLElement>('tr') ||
+        issueLink.closest<HTMLElement>(
+          '[data-testid*="row"]',
+        );
+
+      if (!row) continue;
+
+      let ticketUrl = '';
+
+      try {
+        const url = new URL(issueLink.href);
+        ticketUrl =
+          `https://github.com${url.pathname.replace(/\/$/, '')}`;
+      } catch {
+        continue;
+      }
+
+      const title =
+        cleanText(issueLink.innerText) ||
+        cleanText(issueLink.getAttribute('aria-label'));
+
+      if (!title) continue;
+
+      const fields: Record<string, string> = {};
+      const cells = Array.from(
+        row.querySelectorAll<HTMLElement>(
+          '[role="gridcell"], td, [data-testid*="cell"]',
+        ),
+      );
+
+      cells.forEach((cell, index) => {
+        const value = cleanText(cell.innerText);
+        if (!value) return;
+
+        const ariaIndex = Number(
+          cell.getAttribute('aria-colindex') || 0,
+        );
+
+        const header =
+          (ariaIndex > 0
+            ? headerByIndex.get(ariaIndex)
+            : undefined) ||
+          orderedHeaders[index];
+
+        if (header) {
+          fields[header] = value;
+        }
+      });
+
+      const status = getField(fields, ['status']);
+      const priority = getField(fields, [
+        'priority',
+        'prioritas',
+      ]);
+      const date = normalizeDate(
+        getField(fields, ['date', 'tanggal']),
+      );
+      const week = normalizeWeek(
+        getField(fields, ['week', 'minggu']),
+      );
+
+      const next: ProjectRecapRow = {
+        assignee: assigneeLabel,
+        systemType: getSystemTypeFromTitle(title),
+        ticketTitle: title,
+        ticketUrl,
+        status,
+        priority,
+        date,
+        week,
+      };
+
+      const existing = rows.get(ticketUrl);
+
+      if (!existing) {
+        rows.set(ticketUrl, next);
+        continue;
+      }
+
+      rows.set(ticketUrl, {
+        assignee: existing.assignee || next.assignee,
+        systemType:
+          existing.systemType || next.systemType,
+        ticketTitle:
+          next.ticketTitle.length >= existing.ticketTitle.length
+            ? next.ticketTitle
+            : existing.ticketTitle,
+        ticketUrl,
+        status: next.status || existing.status,
+        priority: next.priority || existing.priority,
+        date: next.date || existing.date,
+        week: next.week || existing.week,
+      });
+    }
+  };
+
+  const findScroller = () => {
+    const firstIssue = document.querySelector<HTMLElement>(
+      'a[href*="/issues/"]',
+    );
+
+    let current: HTMLElement | null =
+      firstIssue?.closest<HTMLElement>('[role="row"]') ??
+      firstIssue?.parentElement ??
+      null;
+
+    while (current) {
+      const style = getComputedStyle(current);
+      const canScroll =
+        current.scrollHeight > current.clientHeight + 100 &&
+        /(auto|scroll)/i.test(style.overflowY);
+
+      if (canScroll) return current;
+
+      current = current.parentElement;
+    }
+
+    const candidates = Array.from(
+      document.querySelectorAll<HTMLElement>('div'),
+    )
+      .filter((element) => {
+        const style = getComputedStyle(element);
+
+        return (
+          element.scrollHeight >
+            element.clientHeight + 200 &&
+          /(auto|scroll)/i.test(style.overflowY)
+        );
+      })
+      .sort(
+        (a, b) =>
+          b.scrollHeight - b.clientHeight -
+          (a.scrollHeight - a.clientHeight),
+      );
+
+    return (
+      candidates[0] ??
+      (document.scrollingElement as HTMLElement | null)
+    );
+  };
+
+  // Project table memakai virtualized rows. Kumpulkan data setiap
+  // langkah scroll agar row yang sudah keluar dari DOM tidak hilang.
+  let stableBottomPasses = 0;
+  let previousSize = -1;
+
+  for (let pass = 0; pass < 160; pass += 1) {
+    collectVisibleRows();
+
+    const scroller = findScroller();
+    if (!scroller) break;
+
+    const before = scroller.scrollTop;
+    const maxTop = Math.max(
+      0,
+      scroller.scrollHeight - scroller.clientHeight,
+    );
+
+    const nextTop = Math.min(
+      maxTop,
+      before + Math.max(500, scroller.clientHeight * 0.75),
+    );
+
+    scroller.scrollTop = nextTop;
+    scroller.dispatchEvent(new Event('scroll'));
+
+    await new Promise((resolve) =>
+      setTimeout(resolve, 250),
+    );
+
+    const atBottom =
+      scroller.scrollTop >=
+      scroller.scrollHeight - scroller.clientHeight - 4;
+
+    if (atBottom && rows.size === previousSize) {
+      stableBottomPasses += 1;
+    } else {
+      stableBottomPasses = 0;
+    }
+
+    previousSize = rows.size;
+
+    if (stableBottomPasses >= 5) {
+      collectVisibleRows();
+      break;
+    }
+  }
+
+  return {
+    rows: [...rows.values()],
+    noAccess: false,
+  };
+}
+
+async function scrapeProjectRecap(
+  projectUrl: string,
+  assigneeLabel: string,
+): Promise<ProjectRecapRow[]> {
+  let tabId: number | undefined;
+
+  try {
+    const tab = await chrome.tabs.create({
+      url: projectUrl,
+      active: false,
+    });
+
+    if (typeof tab.id !== 'number') {
+      throw new Error(
+        'GitHub Project tab tidak memiliki tab id.',
+      );
+    }
+
+    tabId = tab.id;
+
+    await waitForTabComplete(tabId);
+    await delay(1800);
+
+    const injection = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: scrapeProjectViewInBrowser,
+      args: [assigneeLabel],
+    });
+
+    const result =
+      injection[0]?.result as ProjectViewSnapshot | undefined;
+
+    if (!result) {
+      throw new Error(
+        'Tidak mendapat hasil dari GitHub Project.',
+      );
+    }
+
+    if (result.noAccess) {
+      throw new Error(
+        result.error ??
+          'GitHub Project tidak dapat diakses.',
+      );
+    }
+
+    if (result.rows.length === 0) {
+      throw new Error(
+        'GitHub Project tidak menghasilkan ticket. Periksa filter bulan/tahun/assignee atau struktur view.',
+      );
+    }
+
+    return result.rows;
+  } finally {
+    if (typeof tabId === 'number') {
+      try {
+        await chrome.tabs.remove(tabId);
+      } catch {
+        // Tab mungkin sudah tertutup.
+      }
+    }
+  }
 }
 
 async function scrapePage(url: string): Promise<PageSnapshot> {
@@ -1037,80 +1519,10 @@ function workbookFileName(tasks: DsmTask[]) {
   return `KPI-${monthName}-${year || 'Export'}.xlsx`;
 }
 
-function compareTasksChronologically(a: DsmTask, b: DsmTask) {
-  const dateCompare = dsmDateToYmd(a.date).localeCompare(
-    dsmDateToYmd(b.date),
-  );
-
-  if (dateCompare !== 0) return dateCompare;
-
-  const aMinutes = sessionMinutes(a.sessionTime);
-  const bMinutes = sessionMinutes(b.sessionTime);
-
-  if (aMinutes === null && bMinutes === null) return 0;
-  if (aMinutes === null) return 1;
-  if (bMinutes === null) return -1;
-
-  return aMinutes - bMinutes;
-}
-
-function buildUniqueTicketRows(tasks: DsmTask[]) {
-  const grouped = new Map<string, DsmTask[]>();
-
-  for (const task of tasks) {
-    const url = canonicalGithubUrl(task.ticketUrl);
-    const current = grouped.get(url) ?? [];
-    current.push(task);
-    grouped.set(url, current);
-  }
-
-  return [...grouped.entries()]
-    .map(([ticketUrl, group]) => {
-      const ordered = [...group].sort(compareTasksChronologically);
-      const first = ordered[0];
-
-      const bestTitle = ordered.reduce((best, task) =>
-        task.ticketTitle.length > best.ticketTitle.length
-          ? task
-          : best,
-      ).ticketTitle;
-
-      const lastStatus =
-        [...ordered]
-          .reverse()
-          .find((task) => task.status.trim())?.status ?? '';
-
-      const systemType =
-        ordered.find((task) => task.systemType.trim())?.systemType ?? '';
-
-      const priority =
-        [...ordered]
-          .reverse()
-          .find((task) => task.priority.trim())?.priority ?? '';
-
-      return {
-        sortTask: first,
-        row: [
-          first.assignee,
-          systemType,
-          bestTitle,
-          ticketUrl,
-          lastStatus,
-          priority,
-          first.date,
-          first.week,
-        ],
-      };
-    })
-    .sort((a, b) =>
-      compareTasksChronologically(a.sortTask, b.sortTask),
-    )
-    .map((item) => item.row);
-}
-
 async function buildAndDownload(
   tasks: DsmTask[],
   results: DailyResult[],
+  projectRecapRows: ProjectRecapRow[],
 ) {
   const resultByRow = new Map(
     results.map((result) => [result.rowKey, result]),
@@ -1184,7 +1596,16 @@ async function buildAndDownload(
     'Week',
   ];
 
-  const uniqueRows = buildUniqueTicketRows(tasks);
+  const uniqueRows = projectRecapRows.map((row) => [
+    row.assignee,
+    row.systemType,
+    row.ticketTitle,
+    row.ticketUrl,
+    row.status,
+    row.priority,
+    row.date,
+    row.week,
+  ]);
 
   const uniqueSheet = XLSX.utils.aoa_to_sheet([
     uniqueHeaders,
@@ -1353,9 +1774,29 @@ async function runJob(
       githubUsername,
     );
 
+    const projectUrl = buildProjectViewUrl(
+      canonicalTasks,
+      githubUsername,
+    );
+
+    await setState({
+      running: true,
+      current: rootUrls.length,
+      total: rootUrls.length,
+      currentUrl: projectUrl,
+      message:
+        'Mengambil Rekap Tiket Unik dari GitHub Project...',
+    });
+
+    const projectRecapRows = await scrapeProjectRecap(
+      projectUrl,
+      canonicalTasks[0]?.assignee || 'Allief',
+    );
+
     const downloadId = await buildAndDownload(
       canonicalTasks,
       results,
+      projectRecapRows,
     );
 
     const completeCount = results.filter(
@@ -1368,6 +1809,7 @@ async function runJob(
       total: rootUrls.length,
       message:
         `Selesai. ${canonicalTasks.length} row KPI dibuat; ` +
+        `${projectRecapRows.length} ticket unik dari GitHub Project; ` +
         `${completeCount} punya Start & End lengkap.`,
       finishedAt: new Date().toISOString(),
       downloadId,
