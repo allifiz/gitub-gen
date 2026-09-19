@@ -12,22 +12,6 @@ export type DsmTask = {
   dsmTimes: string[];
 };
 
-export type WorkEpisode = {
-  id: string;
-  rootUrl: string;
-  assignee: string;
-  systemType: string;
-  ticketTitle: string;
-  ticketType: string;
-  priority: string;
-  status: string;
-  date: string;
-  week: string;
-  dsmDates: string[];
-  dsmStatuses: string[];
-  dsmTimes: string[];
-};
-
 export type GraphNodeKind = 'issue' | 'pull';
 
 export type GraphNode = {
@@ -57,18 +41,20 @@ export type WorkGraph = {
 export type TimeSource =
   | 'ROOT_ISSUE_STATUS'
   | 'RELATED_ISSUE_STATUS'
-  | 'RELATED_PR_ACTIVITY'
-  | 'PR_ACTIVITY_PARTIAL'
+  | 'RELATED_ACTIVITY'
+  | 'INSUFFICIENT_ACTIVITY'
   | 'DSM_ONLY';
 
-export type EpisodeResult = {
-  episodeId: string;
+export type DailyResult = {
+  rowKey: string;
   rootUrl: string;
+  date: string;
   startIso: string | null;
   endIso: string | null;
   timeSource: TimeSource;
   statusSourceUrls: string[];
   activitySourceUrls: string[];
+  activityCount: number;
   relatedIssueUrls: string[];
   relatedPrUrls: string[];
   graphErrors: string[];
