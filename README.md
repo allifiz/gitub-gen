@@ -78,12 +78,12 @@ Kalau hanya ada satu cluster dan ticket muncul di dua sesi, cluster diberikan ke
 
 ### 1. Status pair
 
-Kalau work graph punya:
+Kalau work graph punya perpindahan dari In Progress sampai Ready to Review atau langsung Staging:
 
 ```text
 to In Progress
 ...
-to Ready to Review
+to Ready to Review / to Staging
 ```
 
 dan pasangan itu terjadi pada hari DSM, pasangan status dianggap bukti paling kuat.
