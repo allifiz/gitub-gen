@@ -46,7 +46,9 @@ function renderPreview(tasks: DsmTask[]) {
     title.textContent = task.ticketTitle;
 
     const meta = document.createElement('span');
-    meta.textContent = `${task.date} · ${task.status || 'status kosong'}`;
+    meta.textContent =
+      `${task.date} · DSM ${task.sessionTime || 'tanpa jam'} · ` +
+      `${task.status || 'status kosong'}`;
 
     item.append(title, meta);
     preview.append(item);
@@ -57,7 +59,7 @@ function renderPreview(tasks: DsmTask[]) {
     more.className = 'preview-item';
 
     const text = document.createElement('span');
-    text.textContent = `+${tasks.length - 8} issue lainnya`;
+    text.textContent = `+${tasks.length - 8} row DSM lainnya`;
 
     more.append(text);
     preview.append(more);
@@ -96,7 +98,7 @@ async function parseSelectedFile() {
     statusEl.textContent = 'Siap generate.';
     const uniqueRoots = new Set(parsedTasks.map((task) => task.ticketUrl)).size;
     detailEl.textContent =
-      `${parsedTasks.length} entri harian dari ${uniqueRoots} root issue ditemukan.`;
+      `${parsedTasks.length} row sesi DSM dari ${uniqueRoots} root issue ditemukan.`;
     generateButton.disabled = running;
   } catch (error) {
     parsedTasks = [];
