@@ -701,12 +701,14 @@ async function scrapeProjectViewInBrowser(
     );
   };
 
-  // Project table memakai virtualized rows. Kumpulkan data setiap
-  // langkah scroll agar row yang sudah keluar dari DOM tidak hilang.
+  // GitHub Projects memakai virtualized rows. Tidak perlu ratusan
+  // scroll kecil: itu sangat lambat pada tab background karena timer
+  // Chrome bisa di-throttle. Scroll hampir satu viewport per langkah
+  // dan berhenti setelah jumlah ticket stabil di bagian bawah.
   let stableBottomPasses = 0;
   let previousSize = -1;
 
-  for (let pass = 0; pass < 160; pass += 1) {
+  for (let pass = 0; pass < 24; pass += 1) {
     collectVisibleRows();
 
     const scroller = findScroller();
@@ -720,29 +722,25 @@ async function scrapeProjectViewInBrowser(
 
     const nextTop = Math.min(
       maxTop,
-      before + Math.max(500, scroller.clientHeight * 0.75),
+      before + Math.max(700, scroller.clientHeight * 0.95),
     );
 
-    scroller.scrollTop = nextTop;
-    scroller.dispatchEvent(new Event('scroll'));
-
-    await new Promise((resolve) =>
-      setTimeout(resolve, 250),
-    );
-
-    const atBottom =
-      scroller.scrollTop >=
-      scroller.scrollHeight - scroller.clientHeight - 4;
-
-    if (atBottom && rows.size === previousSize) {
+    if (nextTop === before && rows.size === previousSize) {
       stableBottomPasses += 1;
     } else {
       stableBottomPasses = 0;
     }
 
+    scroller.scrollTop = nextTop;
+    scroller.dispatchEvent(new Event('scroll'));
+
+    await new Promise((resolve) =>
+      setTimeout(resolve, 120),
+    );
+
     previousSize = rows.size;
 
-    if (stableBottomPasses >= 5) {
+    if (stableBottomPasses >= 2) {
       collectVisibleRows();
       break;
     }
@@ -777,11 +775,24 @@ async function scrapeProjectRecap(
     await waitForTabComplete(tabId);
     await delay(1800);
 
-    const injection = await chrome.scripting.executeScript({
-      target: { tabId },
-      func: scrapeProjectViewInBrowser,
-      args: [assigneeLabel],
-    });
+    const injection = await Promise.race([
+      chrome.scripting.executeScript({
+        target: { tabId },
+        func: scrapeProjectViewInBrowser,
+        args: [assigneeLabel],
+      }),
+      new Promise<never>((_, reject) => {
+        setTimeout(
+          () =>
+            reject(
+              new Error(
+                'Timeout membaca GitHub Project setelah 35 detik.',
+              ),
+            ),
+          35_000,
+        );
+      }),
+    ]);
 
     const result =
       injection[0]?.result as ProjectViewSnapshot | undefined;
