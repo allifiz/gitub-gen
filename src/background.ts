@@ -113,7 +113,30 @@ async function setState(state: JobState) {
 
 async function getState(): Promise<JobState> {
   const stored = await chrome.storage.local.get(STATE_KEY);
-  return (stored[STATE_KEY] as JobState | undefined) ?? initialState;
+  const state =
+    (stored[STATE_KEY] as JobState | undefined) ?? initialState;
+
+  // Setelah extension/service worker direload, state storage bisa masih
+  // running=true padahal job in-memory sudah tidak ada. Jangan biarkan
+  // UI terkunci selamanya gara-gara state zombie.
+  if (state.running && !inMemoryRunning) {
+    const recoveredState: JobState = {
+      ...state,
+      running: false,
+      currentUrl: undefined,
+      message:
+        'Job sebelumnya terhenti karena extension direload. Siap generate ulang.',
+      finishedAt: new Date().toISOString(),
+    };
+
+    await chrome.storage.local.set({
+      [STATE_KEY]: recoveredState,
+    });
+
+    return recoveredState;
+  }
+
+  return state;
 }
 
 function delay(ms: number) {
