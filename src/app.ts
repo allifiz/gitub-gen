@@ -25,12 +25,17 @@ function setProgress(state: JobState) {
     state.total > 0 ? Math.round((state.current / state.total) * 100) : 0;
 
   progressBar.style.width = `${percent}%`;
-  statusEl.textContent = state.running
-    ? `Memproses ${state.current}/${state.total}`
-    : state.message;
-  detailEl.textContent = state.currentUrl
-    ? state.currentUrl
-    : state.message;
+  statusEl.textContent = state.message;
+
+  if (state.running && state.total > 0) {
+    detailEl.textContent =
+      `${state.current}/${state.total}` +
+      (state.currentUrl ? ` · ${state.currentUrl}` : '');
+  } else {
+    detailEl.textContent = state.currentUrl
+      ? state.currentUrl
+      : state.message;
+  }
 }
 
 function renderPreview(tasks: DsmTask[]) {
