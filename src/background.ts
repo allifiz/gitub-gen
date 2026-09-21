@@ -1734,13 +1734,22 @@ async function buildAndDownload(
     type: 'base64',
   });
 
-  return chrome.downloads.download({
+  const downloadId = await chrome.downloads.download({
     url:
       'data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,' +
       base64,
     filename: workbookFileName(tasks),
-    saveAs: true,
+    conflictAction: 'uniquify',
+    saveAs: false,
   });
+
+  if (typeof downloadId !== 'number') {
+    throw new Error(
+      'Chrome tidak mengembalikan download id untuk file Excel.',
+    );
+  }
+
+  return downloadId;
 }
 
 async function runJob(
@@ -1819,6 +1828,14 @@ async function runJob(
       canonicalTasks[0]?.assignee || 'Allief',
     );
 
+    await setState({
+      running: true,
+      current: rootUrls.length,
+      total: rootUrls.length,
+      message:
+        `GitHub Project selesai: ${projectRecapRows.length} ticket. Menyusun Excel...`,
+    });
+
     const downloadId = await buildAndDownload(
       canonicalTasks,
       results,
@@ -1828,6 +1845,14 @@ async function runJob(
     const completeCount = results.filter(
       (result) => result.startIso && result.endIso,
     ).length;
+
+    await setState({
+      running: true,
+      current: rootUrls.length,
+      total: rootUrls.length,
+      message:
+        `Excel berhasil dikirim ke Chrome Downloads (ID ${downloadId}).`,
+    });
 
     await setState({
       running: false,
