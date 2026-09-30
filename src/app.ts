@@ -172,3 +172,6 @@ async function restoreState() {
 }
 
 void restoreState();
+
+// Refresh state while a job is active so a restarted worker cannot leave a stale UI.
+setInterval(() => { if (running) void restoreState(); }, 5_000);

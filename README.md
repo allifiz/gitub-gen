@@ -338,3 +338,17 @@ Setelah rebuild, buka `chrome://extensions` lalu klik **Reload** pada Gitub Gen.
 - tidak ada OAuth App
 - tidak ada PAT
 - tidak ada upload DSM ke server
+
+## v0.3.0 — export dan ketahanan proses
+
+- Start/End berupa nilai tanggal Excel dalam WIB dengan format `dd/mm/yyyy hh:mm:ss`, independen timezone komputer. Kolom Date memakai `dd/mm/yyyy`.
+- Hour tetap numerik, ditampilkan dua desimal tanpa mengurangi presisi nilai.
+- Cache halaman issue/PR digunakan bersama antar-root selama satu job. Cache tidak digunakan lintas job.
+- Timeout timeline 25 detik, keseluruhan tahap Project 80 detik, dan penutupan tab 5 detik.
+- Heartbeat hanya selama job berjalan; UI memeriksa state setiap 5 detik untuk mendeteksi worker restart.
+- Sukses baru dilaporkan setelah Chrome menyatakan download complete. Download interrupted dilaporkan sebagai error.
+- Diagnostics menambahkan Review Notes untuk kelompok waktu tidak ditemukan, satu aktivitas, dan durasi kurang dari satu menit.
+
+Data graph masih berada di memori; versi ini belum mendukung resume setelah worker restart. Kegagalan Project tetap membatalkan export lengkap. Waktu kosong tidak diisi dengan estimasi buatan. Kelengkapan relasi/aktivitas GitHub tetap perlu dicocokkan dengan timeline asli.
+
+Setelah `git pull` dan `npm install`, jalankan `npm run build`, reload extension di `chrome://extensions`, lalu buka ulang tab aplikasi. Versi pada halaman extension harus 0.3.0.

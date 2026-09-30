@@ -1,3 +1,4 @@
+import { excelWibDate, excelCalendarDate, withTimeout } from './export-utils';
 import * as XLSX from 'xlsx';
 import type {
   DailyResult,
@@ -775,24 +776,11 @@ async function scrapeProjectRecap(
     await waitForTabComplete(tabId);
     await delay(1800);
 
-    const injection = await Promise.race([
-      chrome.scripting.executeScript({
-        target: { tabId },
-        func: scrapeProjectViewInBrowser,
-        args: [assigneeLabel],
-      }),
-      new Promise<never>((_, reject) => {
-        setTimeout(
-          () =>
-            reject(
-              new Error(
-                'Timeout membaca GitHub Project setelah 35 detik.',
-              ),
-            ),
-          35_000,
-        );
-      }),
-    ]);
+    const injection = await withTimeout(chrome.scripting.executeScript({
+      target: { tabId },
+      func: scrapeProjectViewInBrowser,
+      args: [assigneeLabel],
+    }), 35_000, 'membaca GitHub Project setelah 35 detik');
 
     const result =
       injection[0]?.result as ProjectViewSnapshot | undefined;
@@ -820,7 +808,7 @@ async function scrapeProjectRecap(
   } finally {
     if (typeof tabId === 'number') {
       try {
-        await chrome.tabs.remove(tabId);
+        await withTimeout(chrome.tabs.remove(tabId), 5_000, 'menutup tab crawl');
       } catch {
         // Tab mungkin sudah tertutup.
       }
@@ -846,10 +834,10 @@ async function scrapePage(url: string): Promise<PageSnapshot> {
     await waitForTabComplete(tabId);
     await delay(900);
 
-    const injection = await chrome.scripting.executeScript({
+    const injection = await withTimeout(chrome.scripting.executeScript({
       target: { tabId },
       func: scrapeGithubPageInBrowser,
-    });
+    }), 25_000, `membaca timeline ${url}`);
 
     const result = injection[0]?.result as PageSnapshot | undefined;
 
@@ -864,7 +852,7 @@ async function scrapePage(url: string): Promise<PageSnapshot> {
   } finally {
     if (typeof tabId === 'number') {
       try {
-        await chrome.tabs.remove(tabId);
+        await withTimeout(chrome.tabs.remove(tabId), 5_000, 'menutup tab crawl');
       } catch {
         // Tab mungkin sudah tertutup.
       }
@@ -872,7 +860,7 @@ async function scrapePage(url: string): Promise<PageSnapshot> {
   }
 }
 
-async function crawlWorkGraph(rootUrl: string): Promise<WorkGraph> {
+async function crawlWorkGraph(rootUrl: string, cache: Map<string, PageSnapshot>): Promise<WorkGraph> {
   const canonicalRoot = canonicalGithubUrl(rootUrl);
   const queue: QueueItem[] = [
     {
@@ -899,7 +887,8 @@ async function crawlWorkGraph(rootUrl: string): Promise<WorkGraph> {
     visited.add(nodeUrl);
 
     try {
-      const snapshot = await scrapePage(nodeUrl);
+      const snapshot = cache.get(nodeUrl) ?? await scrapePage(nodeUrl);
+      if (!snapshot.noAccess) cache.set(nodeUrl, snapshot);
 
       nodes.push({
         ...current.node,
@@ -1488,37 +1477,6 @@ function resolveRows(
   return results;
 }
 
-function getParts(iso: string) {
-  const parts = new Intl.DateTimeFormat('en-GB', {
-    timeZone: 'Asia/Jakarta',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false,
-  }).formatToParts(new Date(iso));
-
-  return Object.fromEntries(
-    parts.map((part) => [part.type, part.value]),
-  );
-}
-
-function formatStartTime(iso: string | null) {
-  if (!iso) return '';
-
-  const p = getParts(iso);
-  return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}:${p.second}`;
-}
-
-function formatEndTime(iso: string | null) {
-  if (!iso) return '';
-
-  const p = getParts(iso);
-  return `${p.day}/${p.month}/${p.year} ${p.hour}:${p.minute}:${p.second}`;
-}
-
 function calculateHours(
   startIso: string | null,
   endIso: string | null,
@@ -1591,10 +1549,10 @@ async function buildAndDownload(
       task.ticketType,
       task.status,
       task.priority,
-      task.date,
+      excelCalendarDate(task.date),
       task.week,
-      formatStartTime(result?.startIso ?? null),
-      formatEndTime(result?.endIso ?? null),
+      excelWibDate(result?.startIso ?? null),
+      excelWibDate(result?.endIso ?? null),
       calculateHours(
         result?.startIso ?? null,
         result?.endIso ?? null,
@@ -1620,6 +1578,13 @@ async function buildAndDownload(
     { wch: 14 },
   ];
 
+  for (let row = 2; row <= rows.length + 1; row += 1) {
+    for (const col of ['H', 'J', 'K']) {
+      const cell = kpiSheet[`${col}${row}`];
+      if (cell?.t === 'n') cell.z = col === 'H' ? 'dd/mm/yyyy' : 'dd/mm/yyyy hh:mm:ss';
+    }
+    if (kpiSheet[`L${row}`]?.t === 'n') kpiSheet[`L${row}`].z = '0.00';
+  }
   XLSX.utils.book_append_sheet(workbook, kpiSheet, 'KPI');
 
   const uniqueHeaders = [
@@ -1640,7 +1605,7 @@ async function buildAndDownload(
     row.ticketUrl,
     row.status,
     row.priority,
-    row.date,
+    excelCalendarDate(row.date),
     row.week,
   ]);
 
@@ -1649,6 +1614,10 @@ async function buildAndDownload(
     ...uniqueRows,
   ]);
 
+  for (let row = 2; row <= uniqueRows.length + 1; row += 1) {
+    const cell = uniqueSheet[`G${row}`];
+    if (cell?.t === 'n') cell.z = 'dd/mm/yyyy';
+  }
   uniqueSheet['!cols'] = [
     { wch: 12 },
     { wch: 14 },
@@ -1685,6 +1654,7 @@ async function buildAndDownload(
       'Start ISO',
       'End ISO',
       'Graph Errors',
+      'Review Notes',
     ],
     ...tasks.map((task) => {
       const result = resultByRow.get(rowKey(task));
@@ -1707,6 +1677,12 @@ async function buildAndDownload(
         result?.startIso ?? '',
         result?.endIso ?? '',
         result?.graphErrors.join('\n') ?? '',
+        !result || result.timeSource === 'DSM_ONLY'
+          ? (result?.relatedPrUrls.length ? 'Tidak mendapat kelompok waktu untuk tanggal/sesi ini; periksa aktivitas, filter actor, dan pembagian sesi.' : 'Tidak mendapat kelompok waktu; PR terkait tidak terdeteksi. Periksa relasi pada GitHub.')
+          : result.timeSource === 'INSUFFICIENT_ACTIVITY'
+            ? 'Hanya satu aktivitas dalam kelompok; durasi tidak dapat ditentukan.'
+            : Number(calculateHours(result.startIso, result.endIso)) < 1 / 60
+              ? 'Rentang kurang dari satu menit; verifikasi bukti waktu pada GitHub.' : '',
       ];
     }),
   ];
@@ -1732,6 +1708,7 @@ async function buildAndDownload(
     { wch: 28 },
     { wch: 28 },
     { wch: 70 },
+    { wch: 90 },
   ];
 
   XLSX.utils.book_append_sheet(
@@ -1745,14 +1722,14 @@ async function buildAndDownload(
     type: 'base64',
   });
 
-  const downloadId = await chrome.downloads.download({
+  const downloadId = await withTimeout(chrome.downloads.download({
     url:
       'data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,' +
       base64,
     filename: workbookFileName(tasks),
     conflictAction: 'uniquify',
     saveAs: false,
-  });
+  }), 15_000, 'memulai download Excel');
 
   if (typeof downloadId !== 'number') {
     throw new Error(
@@ -1760,7 +1737,15 @@ async function buildAndDownload(
     );
   }
 
-  return downloadId;
+  // A download ID only means Chrome accepted the request, not that the file finished.
+  const deadline = Date.now() + 120_000;
+  while (Date.now() < deadline) {
+    const [item] = await withTimeout(chrome.downloads.search({ id: downloadId }), 5_000, 'memeriksa download');
+    if (item?.state === 'complete') return downloadId;
+    if (item?.state === 'interrupted') throw new Error(`Download terhenti: ${item.error || 'periksa Chrome Downloads'}`);
+    await delay(500);
+  }
+  throw new Error(`Download belum selesai setelah 2 menit (ID ${downloadId}). Periksa Chrome Downloads sebelum generate ulang.`);
 }
 
 async function runJob(
@@ -1768,6 +1753,9 @@ async function runJob(
   githubUsername: string,
 ) {
   inMemoryRunning = true;
+  const heartbeat = setInterval(() => {
+    void chrome.runtime.getPlatformInfo().catch(() => {});
+  }, 20_000);
 
   const canonicalTasks = tasks.map((task) => ({
     ...task,
@@ -1779,16 +1767,17 @@ async function runJob(
   );
 
   const graphs = new Map<string, WorkGraph>();
-
-  await setState({
-    running: true,
-    current: 0,
-    total: rootUrls.length,
-    message:
-      `Membangun work graph untuk ${rootUrls.length} root issue...`,
-  });
+  const pageCache = new Map<string, PageSnapshot>();
 
   try {
+    await setState({
+      running: true,
+      current: 0,
+      total: rootUrls.length,
+      message:
+        `Membangun work graph untuk ${rootUrls.length} root issue...`,
+    });
+
     for (let index = 0; index < rootUrls.length; index += 1) {
       const rootUrl = rootUrls[index];
 
@@ -1801,7 +1790,7 @@ async function runJob(
           `Crawl graph ${index + 1}/${rootUrls.length}`,
       });
 
-      const graph = await crawlWorkGraph(rootUrl);
+      const graph = await crawlWorkGraph(rootUrl, pageCache);
       graphs.set(rootUrl, graph);
 
       await setState({
@@ -1834,10 +1823,10 @@ async function runJob(
         'Mengambil Rekap Tiket Unik dari GitHub Project...',
     });
 
-    const projectRecapRows = await scrapeProjectRecap(
+    const projectRecapRows = await withTimeout(scrapeProjectRecap(
       projectUrl,
       canonicalTasks[0]?.assignee || 'Allief',
-    );
+    ), 80_000, 'tahap GitHub Project; periksa akses/filter dan coba lagi');
 
     await setState({
       running: true,
@@ -1888,6 +1877,7 @@ async function runJob(
       finishedAt: new Date().toISOString(),
     });
   } finally {
+    clearInterval(heartbeat);
     inMemoryRunning = false;
   }
 }
