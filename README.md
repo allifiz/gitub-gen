@@ -352,3 +352,13 @@ Setelah rebuild, buka `chrome://extensions` lalu klik **Reload** pada Gitub Gen.
 Data graph masih berada di memori; versi ini belum mendukung resume setelah worker restart. Kegagalan Project tetap membatalkan export lengkap. Waktu kosong tidak diisi dengan estimasi buatan. Kelengkapan relasi/aktivitas GitHub tetap perlu dicocokkan dengan timeline asli.
 
 Setelah `git pull` dan `npm install`, jalankan `npm run build`, reload extension di `chrome://extensions`, lalu buka ulang tab aplikasi. Versi pada halaman extension harus 0.3.0.
+
+## v0.3.1 — kelengkapan Rekap Project
+
+Scraper mengikuti ancestor baris tabel untuk mencari area scroll, bergerak 70% viewport agar baris tidak terlewat, dan menunggu perubahan baris sampai 4,2 detik setelah setiap perpindahan. Bagian bawah harus stabil selama 6 detik. Batas pembacaan tabel sekarang 110 detik (timeout injection 120 detik, keseluruhan tahap Project 160 detik), menggantikan batas Project v0.3.0.
+
+Isi **Jumlah tiket di Project** sesuai jumlah pada filter yang sama, misalnya 50. Export diblokir jika hasil tidak sama dengan target atau belum mencapai bagian bawah dalam batas waktu. Angka ini tidak ditetapkan permanen untuk bulan lain. Jika dikosongkan, jumlah hasil belum tervalidasi terhadap total Project dan status selesai mengingatkan untuk memeriksanya.
+
+Saat rekap dibaca, tab Project dibuka di depan dan ditutup setelah selesai. Biarkan tab ini terlihat selama pengambilan data. Perubahan ini tidak menambah tiket dari DSM ke rekap atau membuat tiket/waktu buatan. Retry tahap Project tanpa mengulang crawl belum tersedia.
+
+Pengujian: `node --test tests/*.test.mjs` (Node 22.18+ atau 24). Simulasi mencakup 20 tiket yang terlambat muncul setelah 30 tiket, hasil terpotong yang harus gagal, serta viewport kecil dengan render tertunda. Uji ini tidak menggantikan verifikasi pada GitHub Project asli.

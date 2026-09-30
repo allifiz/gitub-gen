@@ -397,6 +397,7 @@ function buildProjectViewUrl(
 
 async function scrapeProjectViewInBrowser(
   assigneeLabel: string,
+  expectedCount: number = 0,
 ): Promise<ProjectViewSnapshot> {
   const bodyText = document.body?.innerText ?? '';
 
@@ -657,94 +658,70 @@ async function scrapeProjectViewInBrowser(
     }
   };
 
+  // Follow ancestors of actual table rows; never choose an unrelated large div.
   const findScroller = () => {
-    const firstIssue = document.querySelector<HTMLElement>(
-      'a[href*="/issues/"]',
-    );
-
-    let current: HTMLElement | null =
-      firstIssue?.closest<HTMLElement>('[role="row"]') ??
-      firstIssue?.parentElement ??
-      null;
-
-    while (current) {
-      const style = getComputedStyle(current);
-      const canScroll =
-        current.scrollHeight > current.clientHeight + 100 &&
-        /(auto|scroll)/i.test(style.overflowY);
-
-      if (canScroll) return current;
-
-      current = current.parentElement;
+    for (const link of Array.from(document.querySelectorAll<HTMLAnchorElement>('a[href*="/issues/"]'))) {
+      const row = link.closest<HTMLElement>('[role="row"], tr, [data-testid*="row"]');
+      if (!row) continue;
+      let current = row.parentElement;
+      while (current) {
+        if (current.clientHeight > 0 && current.scrollHeight > current.clientHeight + 1 &&
+            /(auto|scroll)/i.test(getComputedStyle(current).overflowY)) return current;
+        current = current.parentElement;
+      }
     }
-
-    const candidates = Array.from(
-      document.querySelectorAll<HTMLElement>('div'),
-    )
-      .filter((element) => {
-        const style = getComputedStyle(element);
-
-        return (
-          element.scrollHeight >
-            element.clientHeight + 200 &&
-          /(auto|scroll)/i.test(style.overflowY)
-        );
-      })
-      .sort(
-        (a, b) =>
-          b.scrollHeight - b.clientHeight -
-          (a.scrollHeight - a.clientHeight),
-      );
-
-    return (
-      candidates[0] ??
-      (document.scrollingElement as HTMLElement | null)
-    );
+    return document.scrollingElement as HTMLElement | null;
   };
 
-  // GitHub Projects memakai virtualized rows. Tidak perlu ratusan
-  // scroll kecil: itu sangat lambat pada tab background karena timer
-  // Chrome bisa di-throttle. Scroll hampir satu viewport per langkah
-  // dan berhenti setelah jumlah ticket stabil di bagian bawah.
-  let stableBottomPasses = 0;
-  let previousSize = -1;
-
-  for (let pass = 0; pass < 24; pass += 1) {
+  const pause = () => new Promise((resolve) => setTimeout(resolve, 700));
+  const deadline = Date.now() + 110_000;
+  let stableSince = Date.now();
+  let previousSignature = '';
+  let reachedBottom = false;
+  let started = false;
+  while (Date.now() < deadline) {
     collectVisibleRows();
-
+    if (expectedCount > 0 && rows.size > expectedCount) {
+      throw new Error(`Project terbaca ${rows.size} tiket, melebihi target ${expectedCount}. Periksa filter/jumlah target.`);
+    }
     const scroller = findScroller();
-    if (!scroller) break;
-
-    const before = scroller.scrollTop;
-    const maxTop = Math.max(
-      0,
-      scroller.scrollHeight - scroller.clientHeight,
-    );
-
-    const nextTop = Math.min(
-      maxTop,
-      before + Math.max(700, scroller.clientHeight * 0.95),
-    );
-
-    if (nextTop === before && rows.size === previousSize) {
-      stableBottomPasses += 1;
-    } else {
-      stableBottomPasses = 0;
+    if (!scroller || rows.size === 0) { await pause(); continue; }
+    if (!started) {
+      scroller.scrollTop = 0;
+      scroller.dispatchEvent(new Event('scroll'));
+      started = true;
+      await pause();
+      continue;
     }
 
-    scroller.scrollTop = nextTop;
-    scroller.dispatchEvent(new Event('scroll'));
-
-    await new Promise((resolve) =>
-      setTimeout(resolve, 120),
-    );
-
-    previousSize = rows.size;
-
-    if (stableBottomPasses >= 2) {
-      collectVisibleRows();
+    const maxTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+    const atBottom = scroller.scrollTop >= maxTop - 2;
+    const signature = `${rows.size}|${scroller.scrollTop}|${maxTop}`;
+    if (signature !== previousSignature) stableSince = Date.now();
+    previousSignature = signature;
+    const busy = Boolean(document.querySelector('[role="grid"][aria-busy="true"], [role="table"][aria-busy="true"]'));
+    // Give lazy-loaded/virtual rows several seconds to arrive at the bottom.
+    if (atBottom && !busy && Date.now() - stableSince >= 6000 &&
+        (!expectedCount || rows.size === expectedCount)) {
+      reachedBottom = true;
       break;
     }
+    // Overlap viewports: a fixed 700px minimum can skip rows on small windows.
+    const visibleKey = () => Array.from(document.querySelectorAll<HTMLAnchorElement>('a[href*="/issues/"]')).map((a) => a.href).join('|');
+    const beforeVisible = visibleKey();
+    const beforeTop = scroller.scrollTop;
+    scroller.scrollTop = Math.min(maxTop, beforeTop + Math.max(1, scroller.clientHeight * 0.7));
+    scroller.dispatchEvent(new Event('scroll'));
+    const renderDeadline = Math.min(deadline, Date.now() + 4200);
+    do {
+      await pause();
+      collectVisibleRows();
+      if (scroller.scrollTop === beforeTop || visibleKey() !== beforeVisible) break;
+    } while (Date.now() < renderDeadline);
+  }
+  collectVisibleRows();
+  if (!reachedBottom || (expectedCount > 0 && rows.size !== expectedCount)) {
+    throw new Error(`Rekap Project belum lengkap: ${rows.size}${expectedCount ? `/${expectedCount}` : ''} tiket. Batas waktu tercapai; Excel tidak diekspor. Periksa tabel Project dan coba lagi.`);
   }
 
   return {
@@ -756,13 +733,14 @@ async function scrapeProjectViewInBrowser(
 async function scrapeProjectRecap(
   projectUrl: string,
   assigneeLabel: string,
+  expectedCount: number,
 ): Promise<ProjectRecapRow[]> {
   let tabId: number | undefined;
 
   try {
     const tab = await chrome.tabs.create({
       url: projectUrl,
-      active: false,
+      active: true,
     });
 
     if (typeof tab.id !== 'number') {
@@ -779,8 +757,8 @@ async function scrapeProjectRecap(
     const injection = await withTimeout(chrome.scripting.executeScript({
       target: { tabId },
       func: scrapeProjectViewInBrowser,
-      args: [assigneeLabel],
-    }), 35_000, 'membaca GitHub Project setelah 35 detik');
+      args: [assigneeLabel, expectedCount],
+    }), 120_000, 'membaca seluruh tabel GitHub Project');
 
     const result =
       injection[0]?.result as ProjectViewSnapshot | undefined;
@@ -1751,6 +1729,7 @@ async function buildAndDownload(
 async function runJob(
   tasks: DsmTask[],
   githubUsername: string,
+  expectedCount: number,
 ) {
   inMemoryRunning = true;
   const heartbeat = setInterval(() => {
@@ -1820,13 +1799,14 @@ async function runJob(
       total: rootUrls.length,
       currentUrl: projectUrl,
       message:
-        'Mengambil Rekap Tiket Unik dari GitHub Project...',
+        `Mengambil Rekap Tiket Unik${expectedCount ? ` (target ${expectedCount})` : ''}. Biarkan tab Project terbuka...`,
     });
 
     const projectRecapRows = await withTimeout(scrapeProjectRecap(
       projectUrl,
       canonicalTasks[0]?.assignee || 'Allief',
-    ), 80_000, 'tahap GitHub Project; periksa akses/filter dan coba lagi');
+      expectedCount,
+    ), 160_000, 'tahap GitHub Project; periksa akses/filter dan coba lagi');
 
     await setState({
       running: true,
@@ -1861,7 +1841,8 @@ async function runJob(
       message:
         `Selesai. ${canonicalTasks.length} row KPI dibuat; ` +
         `${projectRecapRows.length} ticket unik dari GitHub Project; ` +
-        `${completeCount} punya Start & End lengkap.`,
+        `${completeCount} punya Start & End lengkap.` +
+        (expectedCount ? ` Jumlah rekap sesuai target ${expectedCount}.` : ' Jumlah rekap belum dibandingkan dengan target; periksa Project.'),
       finishedAt: new Date().toISOString(),
       downloadId,
     });
@@ -1914,8 +1895,13 @@ chrome.runtime.onMessage.addListener(
           return;
         }
 
+        const expectedCount = Number(message.expectedCount || 0);
+        if (!Number.isSafeInteger(expectedCount) || expectedCount < 0) {
+          sendResponse({ ok: false, error: 'Jumlah target tiket harus bilangan bulat positif atau kosong.' });
+          return;
+        }
         sendResponse({ ok: true });
-        void runJob(tasks, githubUsername);
+        void runJob(tasks, githubUsername, expectedCount);
       })();
 
       return true;

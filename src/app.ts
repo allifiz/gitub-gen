@@ -135,6 +135,7 @@ generateButton.addEventListener('click', async () => {
   try {
     const response = await chrome.runtime.sendMessage({
       type: 'START_JOB',
+      expectedCount: Number(document.querySelector<HTMLInputElement>('#expectedCount')!.value || 0),
       tasks: parsedTasks,
       githubUsername:
         githubUsernameInput.value.trim() || 'allifgobimbel',
