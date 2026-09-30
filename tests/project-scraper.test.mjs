@@ -37,11 +37,11 @@ test('collects all 50 when last 20 arrive late after an apparent bottom', async(
  assert.equal(new Set(result.rows.map(r=>r.ticketUrl)).size,50);
 });
 test('blocks partial 30/50 instead of exporting success',async()=>{
- await assert.rejects(fixture({stalled:true}).run(50),/30\/50/);
+ assert.match((await fixture({stalled:true}).run(50)).error, /30\/50/);
 });
 test('overlapping scroll retains all rows in a small viewport with delayed rendering',async()=>{
  assert.equal((await fixture({lazy:false,height:100}).run(50)).rows.length,50);
 });
 test('incorrect expected total is rejected',async()=>{
- await assert.rejects(fixture({lazy:false}).run(20),/melebihi target/);
+ assert.match((await fixture({lazy:false}).run(20)).error, /melebihi target/);
 });

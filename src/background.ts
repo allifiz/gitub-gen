@@ -399,6 +399,7 @@ async function scrapeProjectViewInBrowser(
   assigneeLabel: string,
   expectedCount: number = 0,
 ): Promise<ProjectViewSnapshot> {
+  try {
   const bodyText = document.body?.innerText ?? '';
 
   if (
@@ -728,6 +729,16 @@ async function scrapeProjectViewInBrowser(
     rows: [...rows.values()],
     noAccess: false,
   };
+  } catch (error) {
+    // Rejections inside an injected async function may not produce result.
+    // Return a serializable error so the worker can show the actual cause.
+    return {
+      rows: [],
+      noAccess: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+
 }
 
 async function scrapeProjectRecap(
@@ -769,7 +780,7 @@ async function scrapeProjectRecap(
       );
     }
 
-    if (result.noAccess) {
+    if (result.error || result.noAccess) {
       throw new Error(
         result.error ??
           'GitHub Project tidak dapat diakses.',
